@@ -20,10 +20,14 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+import importlib
 import numpy as np
 import pandas as pd
 import networkx as nx
 
+# Recargar el módulo para usar siempre la versión actual de CarpLib (evita caché antigua)
+import carplib_metaheuristics.modelo as _carplib_mod
+importlib.reload(_carplib_mod)
 from carplib_metaheuristics.modelo import CarpLib
 
 
@@ -45,6 +49,9 @@ class CarpGUI(tk.Tk):
         # Algoritmo de caminos mínimos seleccionado
         self.alg_var = tk.StringVar(value="dijkstra")
         self.algoritmo_actual = None
+
+        # Solución actual (pre procesamiento)
+        self.solucion_actual = None
 
         # Componentes principales
         self._crear_componentes()
@@ -98,6 +105,11 @@ class CarpGUI(tk.Tk):
         self.tab_matrices = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_matrices, text="Matrices")
         self._crear_tab_matrices()
+
+        # --- Pestaña 4: Pre procesamiento ---
+        self.tab_prepro = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_prepro, text="Pre procesamiento")
+        self._crear_tab_preprocesamiento()
 
     def _crear_tab_datos(self):
         # Panel principal con dos secciones: texto a la izquierda, grafo a la derecha
@@ -170,6 +182,115 @@ class CarpGUI(tk.Tk):
         self.nb_matrices.add(self.tab_min, text="Matriz de mínima distancia")
         self.txt_min = self._crear_texto_matriz(self.tab_min)
 
+    def _crear_tab_preprocesamiento(self):
+        """Pestaña Pre procesamiento: solución inicial y operadores (TAREA 3 y 4 del modelo)."""
+        # Marco superior: controles
+        ctrl_frame = ttk.LabelFrame(self.tab_prepro, text="Controles")
+        ctrl_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # --- Solución inicial (TAREA 3) ---
+        ttk.Label(ctrl_frame, text="Solución inicial:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Button(
+            ctrl_frame, text="Generar solución inicial", command=self._on_generar_solucion_inicial
+        ).grid(row=0, column=1, padx=5, pady=5)
+
+        # --- Operadores (TAREA 4) ---
+        ttk.Label(ctrl_frame, text="Operador:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.operador_var = tk.StringVar(value="swap")
+        cbo_op = ttk.Combobox(
+            ctrl_frame,
+            textvariable=self.operador_var,
+            state="readonly",
+            values=["swap", "insertion", "inversion"],
+            width=12,
+        )
+        cbo_op.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+
+        ttk.Label(ctrl_frame, text="P(inter-ruta):").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.p_inter_var = tk.StringVar(value="0.7")
+        spin_p = tk.Spinbox(
+            ctrl_frame, from_=0.0, to=1.0, increment=0.1, textvariable=self.p_inter_var, width=6
+        )
+        spin_p.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(
+            ctrl_frame,
+            text="(prob. de operar entre rutas vs. dentro de una ruta)",
+            font=("TkDefaultFont", 8),
+            foreground="gray",
+        ).grid(row=2, column=2, padx=5, pady=5, sticky=tk.W)
+
+        ttk.Button(
+            ctrl_frame, text="Aplicar mutación", command=self._on_aplicar_mutacion
+        ).grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
+
+        # --- Área de resultado: solución actual, costo, factibilidad ---
+        res_frame = ttk.LabelFrame(self.tab_prepro, text="Solución actual")
+        res_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self.txt_solucion = tk.Text(
+            res_frame, wrap=tk.WORD, font=("Consolas", 10), state=tk.DISABLED, height=15
+        )
+        self.txt_solucion.pack(fill=tk.BOTH, expand=True)
+        scroll = ttk.Scrollbar(res_frame, orient=tk.VERTICAL, command=self.txt_solucion.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.txt_solucion.configure(yscrollcommand=scroll.set)
+
+    def _actualizar_solucion_display(self):
+        """Actualiza el cuadro de texto con la solución actual y su costo/factibilidad."""
+        self.txt_solucion.configure(state=tk.NORMAL)
+        self.txt_solucion.delete("1.0", tk.END)
+        if self.solucion_actual is None:
+            self.txt_solucion.insert(
+                tk.END,
+                "No hay solución cargada. Carga una instancia y pulsa «Generar solución inicial».",
+            )
+        else:
+            costo = self.carp.calcular_costo_y_factibilidad(self.solucion_actual)
+            factible = "Sí" if costo != float("inf") else "No"
+            self.txt_solucion.insert(tk.END, f"Costo total: {costo}\n")
+            self.txt_solucion.insert(tk.END, f"Factible: {factible}\n\n")
+            self.txt_solucion.insert(tk.END, "Rutas por vehículo:\n")
+            for i, ruta in enumerate(self.solucion_actual, start=1):
+                tareas_str = ", ".join(f"T{t}" for t in ruta) if ruta else "(vacía)"
+                self.txt_solucion.insert(tk.END, f"  Vehículo {i}: [{tareas_str}]\n")
+        self.txt_solucion.configure(state=tk.DISABLED)
+
+    def _on_generar_solucion_inicial(self):
+        """Genera una solución inicial (TAREA 3) y la muestra."""
+        if not self.carp.datos:
+            messagebox.showwarning("Sin instancia", "Carga primero una instancia (.dat).")
+            return
+        if not hasattr(self.carp, "generar_solucion_inicial"):
+            messagebox.showerror(
+                "Error",
+                "CarpLib no tiene el método 'generar_solucion_inicial'. "
+                "Asegúrate de que carplib_metaheuristics/modelo.py incluya las TAREAS 3 y 4 "
+                "(generar_solucion_inicial, calcular_costo_y_factibilidad, mutar), "
+                "guarda el archivo, borra la carpeta __pycache__ si existe y vuelve a ejecutar.",
+            )
+            return
+        try:
+            self.solucion_actual = self.carp.generar_solucion_inicial()
+            self._actualizar_solucion_display()
+            messagebox.showinfo("Solución inicial", "Solución inicial generada correctamente.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def _on_aplicar_mutacion(self):
+        """Aplica el operador de mutación (TAREA 4) a la solución actual."""
+        if self.solucion_actual is None:
+            messagebox.showwarning("Sin solución", "Genera primero una solución inicial.")
+            return
+        try:
+            operador = self.operador_var.get() or "swap"
+            p_inter = float(self.p_inter_var.get().strip())
+            p_inter = max(0.0, min(1.0, p_inter))
+            nueva, tipo = self.carp.mutar(self.solucion_actual, operador=operador, p_inter=p_inter)
+            self.solucion_actual = nueva
+            self._actualizar_solucion_display()
+            messagebox.showinfo("Mutación", f"Mutación aplicada ({operador}, {tipo}).")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     @staticmethod
     def _crear_texto_matriz(parent):
@@ -215,10 +336,12 @@ class CarpGUI(tk.Tk):
             self.algoritmo_actual = algoritmo
             self.lbl_archivo.configure(text=os.path.basename(file_path), foreground="black")
 
-            # Actualizar todas las vistas
+            # Reset preprocesamiento y actualizar vistas
+            self.solucion_actual = None
             self._actualizar_datos()
             self._actualizar_grafo()
             self._actualizar_matrices()
+            self._actualizar_solucion_display()
 
             messagebox.showinfo("Instancia cargada", "La instancia se cargó correctamente.")
         except Exception as e:

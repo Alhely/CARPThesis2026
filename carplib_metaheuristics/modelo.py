@@ -88,4 +88,60 @@ class CarpLib:
                            if self.m_dist[dep][it['arco'][0]] != np.inf]
         print(f"\n--- OBJETO: CONECTIVIDAD ---\nTareas alcanzables: {len(self.alcanzables)}")
 
-  
+    # --- TAREA 3: SOLUCIÓN INICIAL ---
+    def generar_solucion_inicial(self):
+        vehiculos, cap_max = self.datos['VEHICULOS'], self.datos['CAPACIDAD']
+        solucion = [[] for _ in range(vehiculos)]
+        tareas = self.alcanzables.copy()
+        random.shuffle(tareas)
+        v_idx, carga = 0, 0
+        for t_id in tareas:
+            dem = self.datos['LISTA_ARISTAS_REQ'][t_id-1]['demanda']
+            if carga + dem <= cap_max:
+                solucion[v_idx].append(t_id); carga += dem
+            elif v_idx + 1 < vehiculos:
+                v_idx += 1; solucion[v_idx].append(t_id); carga = dem
+        return solucion
+
+    def calcular_costo_y_factibilidad(self, solucion):
+        cap_max, dep = self.datos['CAPACIDAD'], self.datos.get('DEPOSITO', 1)
+        costo_total = 0
+        for ruta in solucion:
+            if not ruta: continue
+            carga, pos = 0, dep
+            for t_id in ruta:
+                arco_info = self.datos['LISTA_ARISTAS_REQ'][t_id-1]
+                u, v = arco_info['arco']
+                carga += arco_info['demanda']
+                d_u, d_v = self.m_dist[pos][u], self.m_dist[pos][v]
+                if carga > cap_max or (d_u == np.inf and d_v == np.inf): return float('inf')
+                costo_total += min(d_u, d_v) + arco_info['coste']
+                pos = v if d_u <= d_v else u
+            if self.m_dist[pos][dep] == np.inf: return float('inf')
+            costo_total += self.m_dist[pos][dep]
+        return costo_total
+
+    # --- TAREA 4: OPERADORES ---
+    def mutar(self, solucion, operador="swap", p_inter=0.7):
+        nueva = copy.deepcopy(solucion)
+        activas = [i for i, r in enumerate(nueva) if r]
+        if not activas: return nueva, "Ninguno"
+        es_inter = (random.random() < p_inter) and (len(activas) >= 2)
+        tipo = "Intra"
+        if operador == "swap":
+            r1, r2 = (random.sample(activas, 2) if es_inter else (random.choice(activas),)*2)
+            if r1 != r2: tipo = "Inter"
+            i1, i2 = random.randrange(len(nueva[r1])), random.randrange(len(nueva[r2]))
+            nueva[r1][i1], nueva[r2][i2] = nueva[r2][i2], nueva[r1][i1]
+        elif operador == "insertion":
+            r_orig = random.choice(activas)
+            t = nueva[r_orig].pop(random.randrange(len(nueva[r_orig])))
+            r_dest = random.choice([i for i in range(len(nueva)) if i != r_orig]) if es_inter else r_orig
+            if r_orig != r_dest: tipo = "Inter"
+            nueva[r_dest].insert(random.randint(0, len(nueva[r_dest])), t)
+        elif operador == "inversion":
+            r_idx = random.choice(activas)
+            if len(nueva[r_idx]) > 1:
+                a, b = random.sample(range(len(nueva[r_idx])), 2); i, j = min(a,b), max(a,b)
+                nueva[r_idx][i:j+1] = nueva[r_idx][i:j+1][::-1]
+        return nueva, tipo
