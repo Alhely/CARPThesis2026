@@ -121,6 +121,59 @@ class CarpLib:
             costo_total += self.m_dist[pos][dep]
         return costo_total
 
+    def calcular_detalle_por_ruta(self, solucion):
+        """
+        Retorna costo total, costos por ruta, capacidad usada por ruta y arcos intermedios
+        (deadheading) por ruta. Los arcos intermedios son los tramos recorridos sin servicio,
+        usando la matriz de costes mínimos (camino más corto entre nodos).
+        """
+        cap_max = self.datos['CAPACIDAD']
+        dep = self.datos.get('DEPOSITO', 1)
+        costos_rutas = []
+        capacidad_rutas = []
+        segmentos_por_ruta = []  # list of list of (desde, hasta, distancia) deadhead
+
+        for ruta in solucion:
+            costo_ruta = 0.0
+            carga_ruta = 0
+            segmentos = []
+            if not ruta:
+                costos_rutas.append(0.0)
+                capacidad_rutas.append(0)
+                segmentos_por_ruta.append(segmentos)
+                continue
+
+            pos = dep
+            for t_id in ruta:
+                arco_info = self.datos['LISTA_ARISTAS_REQ'][t_id - 1]
+                u, v = arco_info['arco']
+                d_u, d_v = self.m_dist[pos][u], self.m_dist[pos][v]
+                if d_u == np.inf and d_v == np.inf:
+                    costos_rutas.append(float('inf'))
+                    capacidad_rutas.append(carga_ruta + arco_info['demanda'])
+                    segmentos_por_ruta.append(segmentos)
+                    return float('inf'), costos_rutas, capacidad_rutas, segmentos_por_ruta
+                dist_dead = min(d_u, d_v)
+                nodo_llegada = v if d_u <= d_v else u
+                segmentos.append((int(pos), int(nodo_llegada), float(dist_dead)))
+                costo_ruta += dist_dead + arco_info['coste']
+                carga_ruta += arco_info['demanda']
+                pos = nodo_llegada
+
+            if self.m_dist[pos][dep] == np.inf:
+                costos_rutas.append(float('inf'))
+                capacidad_rutas.append(carga_ruta)
+                segmentos_por_ruta.append(segmentos)
+                return float('inf'), costos_rutas, capacidad_rutas, segmentos_por_ruta
+            segmentos.append((int(pos), int(dep), float(self.m_dist[pos][dep])))
+            costo_ruta += self.m_dist[pos][dep]
+            costos_rutas.append(costo_ruta)
+            capacidad_rutas.append(carga_ruta)
+            segmentos_por_ruta.append(segmentos)
+
+        costo_total = sum(costos_rutas)
+        return costo_total, costos_rutas, capacidad_rutas, segmentos_por_ruta
+
     # --- TAREA 4: OPERADORES ---
     def mutar(self, solucion, operador="swap", p_inter=0.7):
         nueva = copy.deepcopy(solucion)

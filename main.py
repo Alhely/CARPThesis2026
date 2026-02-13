@@ -9,6 +9,7 @@ Interfaz gráfica para visualizar:
 Autor: Tesis CARP 2026
 """
 
+import copy
 import os
 import re
 import tkinter as tk
@@ -235,24 +236,113 @@ class CarpGUI(tk.Tk):
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.txt_solucion.configure(yscrollcommand=scroll.set)
 
-    def _actualizar_solucion_display(self):
+    def _texto_solucion_una(self, solucion, titulo=None):
+        """Genera el texto para una solución: costo, factible, rutas con costo/capacidad, deadheading, representación."""
+        lineas = []
+        if titulo:
+            lineas.append(f"--- {titulo} ---")
+        costo = self.carp.calcular_costo_y_factibilidad(solucion)
+        factible = "Sí" if costo != float("inf") else "No"
+        lineas.append(f"Costo total: {costo}")
+        lineas.append(f"Factible: {factible}")
+        lineas.append("")
+
+        # Detalle por ruta (costo, capacidad) y arcos intermedios si el modelo lo soporta
+        tiene_detalle = hasattr(self.carp, "calcular_detalle_por_ruta")
+        if tiene_detalle:
+            try:
+                _, costos_rutas, capacidad_rutas, segmentos_por_ruta = self.carp.calcular_detalle_por_ruta(solucion)
+            except Exception:
+                tiene_detalle = False
+
+        lineas.append("Rutas por vehículo:")
+        cap_max = self.carp.datos.get("CAPACIDAD", 0) if self.carp.datos else 0
+        for i, ruta in enumerate(solucion, start=1):
+            tareas_str = ", ".join(f"T{t}" for t in ruta) if ruta else "(vacía)"
+            if tiene_detalle and i <= len(costos_rutas):
+                c_r = costos_rutas[i - 1]
+                cap_r = capacidad_rutas[i - 1]
+                c_str = str(c_r) if c_r != float("inf") else "∞"
+                lineas.append(f"  Vehículo {i}: [{tareas_str}]  — costo ruta: {c_str}, capacidad usada: {cap_r}/{cap_max}")
+            else:
+                lineas.append(f"  Vehículo {i}: [{tareas_str}]")
+        lineas.append("")
+
+        # Arcos intermedios (deadheading)
+        if tiene_detalle and segmentos_por_ruta:
+            lineas.append("Arcos intermedios (deadheading):")
+            for i, segmentos in enumerate(segmentos_por_ruta, start=1):
+                if not segmentos:
+                    lineas.append(f"  Vehículo {i}: (sin tramos)")
+                else:
+                    tramos = " ; ".join(f"{a}→{b} (dist={d:.1f})" for a, b, d in segmentos)
+                    lineas.append(f"  Vehículo {i}: {tramos}")
+            lineas.append("")
+
+        # Representación [[5,6],[8,9,4,1],[3,2],....[]]
+        repr_sol = str(solucion).replace(" ", "")
+        lineas.append("Representación:")
+        lineas.append(repr_sol)
+        return "\n".join(lineas)
+
+    def _actualizar_solucion_display(
+        self, explicacion_inicial=False, solucion_original=None, solucion_mutada=None
+    ):
         """Actualiza el cuadro de texto con la solución actual y su costo/factibilidad."""
         self.txt_solucion.configure(state=tk.NORMAL)
         self.txt_solucion.delete("1.0", tk.END)
+
+        if solucion_original is not None and solucion_mutada is not None:
+            # Mostrar solución original y mutada
+            self.txt_solucion.insert(tk.END, self._texto_solucion_una(solucion_original, "Solución original"))
+            self.txt_solucion.insert(tk.END, "\n\n")
+            self.txt_solucion.insert(tk.END, self._texto_solucion_una(solucion_mutada, "Solución mutada"))
+            self.txt_solucion.configure(state=tk.DISABLED)
+            return
+
         if self.solucion_actual is None:
             self.txt_solucion.insert(
                 tk.END,
                 "No hay solución cargada. Carga una instancia y pulsa «Generar solución inicial».",
             )
-        else:
-            costo = self.carp.calcular_costo_y_factibilidad(self.solucion_actual)
-            factible = "Sí" if costo != float("inf") else "No"
-            self.txt_solucion.insert(tk.END, f"Costo total: {costo}\n")
-            self.txt_solucion.insert(tk.END, f"Factible: {factible}\n\n")
-            self.txt_solucion.insert(tk.END, "Rutas por vehículo:\n")
-            for i, ruta in enumerate(self.solucion_actual, start=1):
-                tareas_str = ", ".join(f"T{t}" for t in ruta) if ruta else "(vacía)"
-                self.txt_solucion.insert(tk.END, f"  Vehículo {i}: [{tareas_str}]\n")
+            self.txt_solucion.configure(state=tk.DISABLED)
+            return
+
+        if explicacion_inicial:
+            self.txt_solucion.insert(tk.END, "EXPLICACIÓN\n")
+            self.txt_solucion.insert(tk.END, "=" * 60 + "\n\n")
+            self.txt_solucion.insert(
+                tk.END,
+                "La solución inicial contiene una ruta por vehículo disponible. "
+                "Cada ruta es una lista de tareas (T1, T2, ...) asignadas a ese vehículo.\n\n"
+            )
+            self.txt_solucion.insert(
+                tk.END,
+                "Para calcular el costo total de la solución se usa la matriz de costes mínimos "
+                "(caminos más cortos entre nodos): se elige el camino más corto entre dos nodos "
+                "y se suman los costes de los arcos visitados (tramos intermedios o deadheading "
+                "más el coste de servicio de cada arista requerida).\n\n"
+            )
+            self.txt_solucion.insert(
+                tk.END,
+                "Los arcos intermedios (deadheading) son los tramos recorridos sin dar servicio, "
+                "solo para ir de un nodo al siguiente; su coste es la distancia mínima entre nodos.\n\n"
+            )
+            self.txt_solucion.insert(
+                tk.END,
+                "Factible significa que:\n"
+                "  • Se respeta la capacidad máxima de cada vehículo.\n"
+                "  • Existe un camino entre dos tareas adyacentes (conectividad).\n\n"
+            )
+            self.txt_solucion.insert(
+                tk.END,
+                "P(inter-ruta) es el parámetro que controla la probabilidad de aplicar "
+                "el operador de cambio entre dos rutas (inter-ruta) o entre dos tareas "
+                "de una misma ruta (intra-ruta).\n\n"
+            )
+            self.txt_solucion.insert(tk.END, "=" * 60 + "\n\n")
+
+        self.txt_solucion.insert(tk.END, self._texto_solucion_una(self.solucion_actual))
         self.txt_solucion.configure(state=tk.DISABLED)
 
     def _on_generar_solucion_inicial(self):
@@ -271,13 +361,13 @@ class CarpGUI(tk.Tk):
             return
         try:
             self.solucion_actual = self.carp.generar_solucion_inicial()
-            self._actualizar_solucion_display()
+            self._actualizar_solucion_display(explicacion_inicial=True)
             messagebox.showinfo("Solución inicial", "Solución inicial generada correctamente.")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
     def _on_aplicar_mutacion(self):
-        """Aplica el operador de mutación (TAREA 4) a la solución actual."""
+        """Aplica el operador de mutación (TAREA 4) y muestra solución original y mutada."""
         if self.solucion_actual is None:
             messagebox.showwarning("Sin solución", "Genera primero una solución inicial.")
             return
@@ -285,10 +375,11 @@ class CarpGUI(tk.Tk):
             operador = self.operador_var.get() or "swap"
             p_inter = float(self.p_inter_var.get().strip())
             p_inter = max(0.0, min(1.0, p_inter))
+            original = copy.deepcopy(self.solucion_actual)
             nueva, tipo = self.carp.mutar(self.solucion_actual, operador=operador, p_inter=p_inter)
             self.solucion_actual = nueva
-            self._actualizar_solucion_display()
-            messagebox.showinfo("Mutación", f"Mutación aplicada ({operador}, {tipo}).")
+            self._actualizar_solucion_display(solucion_original=original, solucion_mutada=nueva)
+            messagebox.showinfo("Mutación", f"Mutación aplicada ({operador}, {tipo}). Se muestra original y mutada.")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
