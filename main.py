@@ -228,7 +228,7 @@ class CarpGUI(tk.Tk):
             return
 
         self.ax.clear()
-        self.ax.set_title("Grafo de la instancia")
+        self.ax.set_title("Grafo de la instancia y asignación de tareas")
 
         # Layout para el grafo
         try:
@@ -236,17 +236,76 @@ class CarpGUI(tk.Tk):
         except Exception:
             pos = nx.random_layout(self.carp.G)
 
-        # Dibujar nodos y aristas
-        nx.draw_networkx_nodes(self.carp.G, pos, ax=self.ax, node_color="#1976D2", node_size=300)
+        # -----------------------------
+        # Colores de nodos:
+        # - Azul   : nodo depósito
+        # - Verde  : nodos que aparecen en aristas requeridas
+        # - Gris   : otros nodos
+        # -----------------------------
+        lista_req = self.carp.datos.get("LISTA_ARISTAS_REQ", []) if self.carp.datos else []
+        nodos_req = set()
+        for item in lista_req:
+            u, v = item["arco"]
+            nodos_req.add(u)
+            nodos_req.add(v)
+
+        deposito = None
+        if self.carp.datos:
+            deposito = self.carp.datos.get("DEPOSITO", None)
+
+        node_colors = []
+        for n in self.carp.G.nodes():
+            if deposito is not None and n == deposito:
+                node_colors.append("blue")
+            elif n in nodos_req:
+                node_colors.append("green")
+            else:
+                node_colors.append("#999999")
+
+        nx.draw_networkx_nodes(
+            self.carp.G, pos, ax=self.ax, node_color=node_colors, node_size=320, edgecolors="black"
+        )
         nx.draw_networkx_labels(self.carp.G, pos, ax=self.ax, font_size=8, font_color="white")
 
-        # Etiquetas con coste y demanda
-        edge_labels = {
-            (u, v): f"c:{d['weight']}, q:{d.get('demanda', 0)}"
-            for u, v, d in self.carp.G.edges(data=True)
-        }
-        nx.draw_networkx_edges(self.carp.G, pos, ax=self.ax, edge_color="#555555")
-        nx.draw_networkx_edge_labels(self.carp.G, pos, edge_labels=edge_labels, ax=self.ax, font_size=7)
+        # -----------------------------
+        # Colores y etiquetas de aristas:
+        # - Rojo para aristas requeridas
+        # - Etiqueta incluye:
+        #   T{k}  -> tarea k asociada a la arista requerida k
+        #   dist: distancia (peso)
+        #   dem : demanda
+        # -----------------------------
+        # Construir mapeo arista requerida -> índice de tarea
+        tarea_por_arco = {}
+        for idx, item in enumerate(lista_req, start=1):
+            u, v = item["arco"]
+            key = tuple(sorted((u, v)))
+            tarea_por_arco[key] = idx
+
+        edges = list(self.carp.G.edges())
+        edge_colors = []
+        edge_labels = {}
+
+        for (u, v) in edges:
+            key = tuple(sorted((u, v)))
+            datos = self.carp.G.get_edge_data(u, v, default={})
+            dist = datos.get("weight", 0)
+            dem = datos.get("demanda", 0)
+
+            if key in tarea_por_arco:
+                k = tarea_por_arco[key]
+                # Arista requerida -> roja y etiqueta con tarea
+                edge_colors.append("red")
+                edge_labels[(u, v)] = f"T{k} | dist:{dist}, dem:{dem}"
+            else:
+                # Arista no requerida (por si se añaden en el futuro)
+                edge_colors.append("#555555")
+                edge_labels[(u, v)] = f"dist:{dist}, dem:{dem}"
+
+        nx.draw_networkx_edges(self.carp.G, pos, ax=self.ax, edgelist=edges, edge_color=edge_colors)
+        nx.draw_networkx_edge_labels(
+            self.carp.G, pos, edge_labels=edge_labels, ax=self.ax, font_size=7
+        )
 
         self.ax.axis("off")
         self.canvas.draw()
