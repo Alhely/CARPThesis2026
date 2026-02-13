@@ -10,6 +10,7 @@ Autor: Tesis CARP 2026
 """
 
 import os
+import re
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -224,7 +225,7 @@ class CarpGUI(tk.Tk):
             messagebox.showerror("Error al cargar instancia", str(e))
 
     def _actualizar_datos(self):
-        # Mostrar el archivo de instancia EXACTAMENTE como está en el texto original
+        # Mostrar el archivo de instancia con ID de tarea en cada arista requerida
         if not self.current_file or not os.path.exists(self.current_file):
             return
 
@@ -233,14 +234,31 @@ class CarpGUI(tk.Tk):
 
         try:
             with open(self.current_file, "r", encoding="utf-8-sig") as f:
-                contenido = f.read()
+                lineas = f.readlines()
         except UnicodeDecodeError:
-            # Fallback simple si la codificación es distinta
             with open(self.current_file, "r", errors="replace") as f:
-                contenido = f.read()
+                lineas = f.readlines()
 
-        # Insertar el contenido tal cual está en el archivo
-        self.txt_datos.insert(tk.END, contenido)
+        # Añadir ID de tarea a cada arista requerida (dentro de LISTA_ARISTAS_REQ)
+        dentro_lista = False
+        id_tarea = 0
+        for linea in lineas:
+            linea_orig = linea.rstrip("\n\r")
+            if "LISTA_ARISTAS_REQ" in linea:
+                dentro_lista = True
+                self.txt_datos.insert(tk.END, linea_orig + "\n")
+                continue
+            if "DEPOSITO" in linea:
+                dentro_lista = False
+            if dentro_lista:
+                n = re.findall(r"\d+", linea)
+                if len(n) >= 4:
+                    id_tarea += 1
+                    self.txt_datos.insert(tk.END, linea_orig + f"   # Tarea {id_tarea}\n")
+                else:
+                    self.txt_datos.insert(tk.END, linea_orig + "\n")
+            else:
+                self.txt_datos.insert(tk.END, linea_orig + "\n")
 
         self.txt_datos.configure(state=tk.DISABLED)
 
