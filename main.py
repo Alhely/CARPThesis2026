@@ -99,8 +99,15 @@ class CarpGUI(tk.Tk):
         self._crear_tab_matrices()
 
     def _crear_tab_datos(self):
-        # Caja de texto con scroll para mostrar los datos de la instancia
-        text_frame = ttk.Frame(self.tab_datos)
+        # Panel principal con dos secciones: texto a la izquierda, grafo a la derecha
+        paned = ttk.PanedWindow(self.tab_datos, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # --- Panel izquierdo: Texto de la instancia ---
+        frame_texto = ttk.Frame(paned)
+        paned.add(frame_texto, weight=1)
+
+        text_frame = ttk.Frame(frame_texto)
         text_frame.pack(fill=tk.BOTH, expand=True)
 
         self.txt_datos = tk.Text(
@@ -113,10 +120,23 @@ class CarpGUI(tk.Tk):
         self.txt_datos.configure(yscrollcommand=scroll_y.set)
 
         scroll_x = ttk.Scrollbar(
-            self.tab_datos, orient=tk.HORIZONTAL, command=self.txt_datos.xview
+            frame_texto, orient=tk.HORIZONTAL, command=self.txt_datos.xview
         )
         scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
         self.txt_datos.configure(xscrollcommand=scroll_x.set)
+
+        # --- Panel derecho: Grafo ---
+        frame_grafo = ttk.Frame(paned)
+        paned.add(frame_grafo, weight=1)
+
+        # Figura de Matplotlib para el grafo en la pestaña de datos
+        self.fig_datos = Figure(figsize=(5, 4), dpi=100)
+        self.ax_datos = self.fig_datos.add_subplot(111)
+        self.ax_datos.set_title("Grafo de la instancia")
+
+        self.canvas_datos = FigureCanvasTkAgg(self.fig_datos, master=frame_grafo)
+        self.canvas_datos.draw()
+        self.canvas_datos.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def _crear_tab_grafo(self):
         # Figura de Matplotlib embebida
@@ -148,6 +168,7 @@ class CarpGUI(tk.Tk):
         self.tab_min = ttk.Frame(self.nb_matrices)
         self.nb_matrices.add(self.tab_min, text="Matriz de mínima distancia")
         self.txt_min = self._crear_texto_matriz(self.tab_min)
+
 
     @staticmethod
     def _crear_texto_matriz(parent):
@@ -223,12 +244,21 @@ class CarpGUI(tk.Tk):
 
         self.txt_datos.configure(state=tk.DISABLED)
 
-    def _actualizar_grafo(self):
+        # Actualizar el grafo en la pestaña de datos (sin análisis para ahorrar espacio)
+        if self.carp.G is not None and len(self.carp.G.nodes) > 0:
+            self._dibujar_grafo_en_ax(
+                self.ax_datos, self.canvas_datos, mostrar_leyenda=True, mostrar_analisis=False
+            )
+
+    def _dibujar_grafo_en_ax(self, ax, canvas, mostrar_leyenda=True, mostrar_analisis=True):
+        """
+        Método auxiliar para dibujar el grafo en un ax y canvas dados.
+        """
         if self.carp.G is None or len(self.carp.G.nodes) == 0:
             return
 
-        self.ax.clear()
-        self.ax.set_title("Grafo de la instancia y asignación de tareas")
+        ax.clear()
+        ax.set_title("Grafo de la instancia y asignación de tareas")
 
         # Layout para el grafo
         try:
@@ -263,9 +293,9 @@ class CarpGUI(tk.Tk):
                 node_colors.append("#999999")
 
         nx.draw_networkx_nodes(
-            self.carp.G, pos, ax=self.ax, node_color=node_colors, node_size=320, edgecolors="black"
+            self.carp.G, pos, ax=ax, node_color=node_colors, node_size=320, edgecolors="black"
         )
-        nx.draw_networkx_labels(self.carp.G, pos, ax=self.ax, font_size=8, font_color="white")
+        nx.draw_networkx_labels(self.carp.G, pos, ax=ax, font_size=8, font_color="white")
 
         # -----------------------------
         # Colores y etiquetas de aristas:
@@ -302,13 +332,54 @@ class CarpGUI(tk.Tk):
                 edge_colors.append("#555555")
                 edge_labels[(u, v)] = f"dist:{dist}, dem:{dem}"
 
-        nx.draw_networkx_edges(self.carp.G, pos, ax=self.ax, edgelist=edges, edge_color=edge_colors)
+        nx.draw_networkx_edges(self.carp.G, pos, ax=ax, edgelist=edges, edge_color=edge_colors)
         nx.draw_networkx_edge_labels(
-            self.carp.G, pos, edge_labels=edge_labels, ax=self.ax, font_size=7
+            self.carp.G, pos, edge_labels=edge_labels, ax=ax, font_size=7
         )
 
-        self.ax.axis("off")
-        self.canvas.draw()
+        # -----------------------------
+        # Leyenda y análisis (opcionales)
+        # -----------------------------
+        if mostrar_leyenda:
+            leyenda_texto = [
+                "Leyenda:",
+                "• dem: Demanda de la arista",
+                "• dist: Distancia (peso) de la arista",
+                "• T1, T2, ...: Tareas asignadas a aristas requeridas",
+                "  (T1 = arista requerida 1, T2 = arista requerida 2, ...)",
+            ]
+            texto_leyenda = "\n".join(leyenda_texto)
+            ax.text(
+                0.02,
+                0.98,
+                texto_leyenda,
+                transform=ax.transAxes,
+                fontsize=8,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="wheat", alpha=0.85, edgecolor="black"),
+                family="monospace",
+            )
+
+        if mostrar_analisis:
+            analisis_texto = self._generar_analisis_grafo()
+            ax.text(
+                0.98,
+                0.02,
+                analisis_texto,
+                transform=ax.transAxes,
+                fontsize=7,
+                verticalalignment="bottom",
+                horizontalalignment="right",
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.85, edgecolor="black"),
+                family="monospace",
+            )
+
+        ax.axis("off")
+        canvas.draw()
+
+    def _actualizar_grafo(self):
+        """Actualiza el grafo en la pestaña dedicada de grafo."""
+        self._dibujar_grafo_en_ax(self.ax, self.canvas, mostrar_leyenda=True, mostrar_analisis=True)
 
     def _actualizar_matrices(self):
         if self.carp.m_dist is None or self.carp.datos is None:
@@ -368,6 +439,85 @@ class CarpGUI(tk.Tk):
             titulo="MATRIZ DE MÍNIMA DISTANCIA ENTRE VÉRTICES",
             descripcion=descripcion_min,
         )
+
+    def _generar_analisis_grafo(self):
+        """
+        Genera un texto con el análisis del grafo usando NetworkX.
+        Retorna un string formateado para mostrar en el gráfico.
+        """
+        if self.carp.G is None or self.carp.datos is None:
+            return "Análisis no disponible"
+
+        G = self.carp.G
+        datos = self.carp.datos
+        lineas = []
+
+        # Tipo de grafo
+        es_dirigido = G.is_directed()
+        lineas.append(f"Tipo de grafo: {'Dirigido' if es_dirigido else 'No dirigido'}")
+
+        # Número de nodos y aristas
+        n_nodos = G.number_of_nodes()
+        n_aristas = G.number_of_edges()
+        lineas.append(f"Número de nodos: {n_nodos}")
+        lineas.append(f"Número de aristas: {n_aristas}")
+
+        # Conectividad global
+        try:
+            if not es_dirigido:
+                conexo = nx.is_connected(G)
+            else:
+                conexo = nx.is_strongly_connected(G)
+        except Exception:
+            conexo = False
+
+        lineas.append(f"¿Es conexo?: {'Sí' if conexo else 'No'}")
+        if conexo:
+            lineas.append("  Significa: existe un camino entre")
+            lineas.append("  cualquier par de nodos")
+        else:
+            lineas.append("  Significa: hay nodos aislados")
+            lineas.append("  o componentes desconectadas")
+
+        # Depósito y nodos alcanzables
+        deposito = datos.get("DEPOSITO", None)
+        if deposito is not None and deposito in G.nodes:
+            lineas.append(f"\nDepósito: nodo {deposito}")
+            try:
+                if not es_dirigido:
+                    comp_dep = nx.node_connected_component(G, deposito)
+                else:
+                    comp_dep = nx.node_connected_component(G.to_undirected(), deposito)
+            except Exception:
+                comp_dep = set()
+
+            nodos_no_alcanzables = sorted(set(G.nodes()) - set(comp_dep))
+            if nodos_no_alcanzables:
+                lineas.append(f"¿Nodos alcanzables?: No")
+                if len(nodos_no_alcanzables) <= 10:
+                    lineas.append(f"  Nodos no alcanzables: {nodos_no_alcanzables}")
+                else:
+                    lineas.append(f"  Nodos no alcanzables: {len(nodos_no_alcanzables)} nodos")
+            else:
+                lineas.append(f"¿Nodos alcanzables?: Sí")
+                lineas.append("  Todos los nodos son alcanzables")
+
+            # Arcos requeridos alcanzables desde el depósito
+            lista_req = datos.get("LISTA_ARISTAS_REQ", [])
+            arcos_no_alcanzables = []
+            for item in lista_req:
+                u, v = item["arco"]
+                if u not in comp_dep and v not in comp_dep:
+                    arcos_no_alcanzables.append((u, v))
+
+            if arcos_no_alcanzables:
+                lineas.append(f"\n¿Arcos requeridos alcanzables?: No")
+                lineas.append(f"  {len(arcos_no_alcanzables)} arcos no pueden llegar al depósito")
+            else:
+                lineas.append(f"\n¿Arcos requeridos alcanzables?: Sí")
+                lineas.append("  Todos los arcos requeridos pueden llegar al depósito")
+
+        return "\n".join(lineas)
 
     @staticmethod
     def _mostrar_matriz_en_texto(widget_txt, df, titulo="MATRIZ", descripcion=None):
