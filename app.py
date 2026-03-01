@@ -41,6 +41,7 @@ if uploaded_file is not None:
                 'grafo': grafo, 'distancias': distancias,
                 'sol_inicial': init_sol, 'costo_inicial': costo_tot,
                 'mejor_solucion_global': init_sol, 'mejor_costo_global': costo_tot,
+                'meta_usada': 'Solución Aleatoria Inicial',
                 'solucion_actual': init_sol, 'costo_actual': costo_tot, 'reporte_actual': txt_reporte
             })
         st.sidebar.success("¡Entorno listo!")
@@ -86,6 +87,7 @@ if 'd_noreq' in st.session_state:
                     if c_vec < st.session_state['mejor_costo_global']:
                          st.session_state['mejor_solucion_global'] = vecino
                          st.session_state['mejor_costo_global'] = c_vec
+                         st.session_state['meta_usada'] = f"Búsqueda Manual ({op_manual.capitalize()})"
                          st.toast("¡Nuevo óptimo global encontrado manualmente!", icon="🎉")
 
                     st.session_state.update({'solucion_actual': vecino, 'costo_actual': c_vec, 'reporte_actual': txt_vec})
@@ -107,9 +109,11 @@ if 'd_noreq' in st.session_state:
                     st.session_state['mejor_solucion_global'], data, st.session_state['distancias'],
                     t_inicial, alfa, iter_por_t, t_final, operador_sa
                 )
+                
                 if mejor_costo < st.session_state['mejor_costo_global']:
                     st.session_state['mejor_solucion_global'] = mejor_sol
                     st.session_state['mejor_costo_global'] = mejor_costo
+                    st.session_state['meta_usada'] = "Recocido Simulado" 
                 
                 captura = io.StringIO()
                 sys.stdout = captura
@@ -139,7 +143,7 @@ if 'd_noreq' in st.session_state:
             df_historial = pd.DataFrame(historial, columns=["Costo"])
             st.line_chart(df_historial, use_container_width=True)
 
-    # --- PESTAÑA 3: MAPA DE RUTAS (LIMPIA Y ORDENADA) ---
+ # --- PESTAÑA 3: MAPA DE RUTAS (INTERACTIVO Y SIN PARPADEO) ---
     with tab3:
         st.markdown("### 🗺️ Mapa Interactivo de Rutas")
         mejor_solucion = st.session_state['mejor_solucion_global']
@@ -154,38 +158,114 @@ if 'd_noreq' in st.session_state:
         
         st.divider()
         
-        # Dividimos la pantalla: 70% Gráfica, 30% Cuadro de Texto de la Leyenda
-        col_grafica, col_texto = st.columns([7, 3])
-        
+        # ==========================================
+        # VISTA 1: VISIÓN GENERAL (TODAS LAS RUTAS)
+        # ==========================================
         if vista == "Visión General (Todas las Rutas)":
-            with col_texto:
-                st.info(f"**Costo Total:** {costo_total_mejor}")
+            st.info(f"**Costo Total de la Solución:** {costo_total_mejor}")
+            
+            with st.spinner("Dibujando el mapa completo..."):
+                nombre_meta = st.session_state.get('meta_usada', 'Solución Inicial')
+                fig, texto_leyenda = viz.dibujar_rutas(
+                    st.session_state['grafo'], mejor_solucion, data, 
+                    ruta_idx=None, metaheuristica=nombre_meta
+                )
                 
-            with st.spinner("Dibujando el mapa..."):
-                fig, texto_leyenda = viz.dibujar_rutas(st.session_state['grafo'], mejor_solucion, data, ruta_idx=None)
-                with col_grafica:
-                    st.plotly_chart(fig, use_container_width=True)
-                with col_texto:
-                    # El texto se muestra limpio y sin estorbar a la gráfica
+                # 1. GRÁFICA A PANTALLA COMPLETA
+                st.plotly_chart(fig, use_container_width=True, key="plot_general")
+                
+                # 2. DETALLE ESCRITO DEBAJO
+                with st.expander("Ver Secuencias de Tareas", expanded=True):
                     st.markdown(texto_leyenda)
                 
+        # ==========================================
+        # VISTA 2: RUTA INDIVIDUAL (CON REPRODUCTOR)
+        # ==========================================
         else:
             idx = int(vista.replace("Ruta ", "")) - 1
             cap_max = data.get('CAPACIDAD', 0)
-            info_tareas = {t['tarea']: t['demanda'] for t in data.get('LISTA_ARISTAS_REQ', [])}
-            demanda_ruta = sum(info_tareas[t] for t in mejor_solucion[idx])
+            # Reconstruimos la información de las tareas completa
+            info_tareas = {t['tarea']: t for t in data.get('LISTA_ARISTAS_REQ', [])}
             
-            with col_texto:
-                st.info(f"**Costo Ruta:** {costos_por_ruta[idx]}\n\n**Demanda:** {demanda_ruta} / {cap_max}")
-                if demanda_ruta > cap_max:
-                    st.error("⚠️ Capacidad excedida.")
+            # --- TOTALES FINALES (Para contexto antes de iniciar el viaje) ---
+            demanda_total_ruta = sum(info_tareas[t]['demanda'] for t in mejor_solucion[idx])
+            st.info(f"🏁 **Proyección Final de la Ruta {idx + 1}:** Costo Total Estimado = {costos_por_ruta[idx]} | Demanda Total = {demanda_total_ruta} / {cap_max}")
+            st.divider()
+
+            # ==========================================
+            # EL "FRAGMENTO" MÁGICO PARA EVITAR PARPADEOS
+            # ==========================================
+            @st.fragment
+            def reproductor_aislado():
+                G = st.session_state['grafo']
+                movimientos = viz.obtener_secuencia_movimientos(G, mejor_solucion[idx], data.get('DEPOSITO', 1), info_tareas)
+                total_pasos = len(movimientos)
+                
+                clave_paso = f"paso_ruta_{idx}"
+                if clave_paso not in st.session_state:
+                    st.session_state[clave_paso] = 0 
+                
+                # --- 1. REPRODUCTOR (Arriba) ---
+                st.markdown("### ⏯️ Controles de Reproducción")
+                
+                # Fila de Botones
+                col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+                with col_b1:
+                    if st.button("⏪ Inicio", use_container_width=True): st.session_state[clave_paso] = 0
+                with col_b2:
+                    if st.button("⏮️ Anterior", use_container_width=True): 
+                        if st.session_state[clave_paso] > 0: st.session_state[clave_paso] -= 1
+                with col_b3:
+                    if st.button("Siguiente ⏭️", use_container_width=True, type="primary"):
+                        if st.session_state[clave_paso] < total_pasos: st.session_state[clave_paso] += 1
+                with col_b4:
+                    if st.button("Fin ⏩", use_container_width=True): st.session_state[clave_paso] = total_pasos
+                        
+                paso_actual = st.session_state[clave_paso]
+                
+                # Barra de progreso visual
+                progreso = paso_actual / total_pasos if total_pasos > 0 else 0
+                st.progress(progreso)
+                st.caption(f"Mostrando movimiento **{paso_actual}** de **{total_pasos}**")
+                
+                # CÁLCULO DE MÉTRICAS EN TIEMPO REAL
+                costo_acumulado = 0
+                demanda_acumulada = 0
+                
+                for i in range(paso_actual):
+                    mov = movimientos[i]
+                    if mov['tipo'] == 'DH':
+                        costo_acumulado += G[mov['u']][mov['v']]['cost']
+                    else:
+                        tarea_id = mov['tarea']
+                        costo_acumulado += info_tareas[tarea_id]['costo']
+                        demanda_acumulada += info_tareas[tarea_id]['demanda']
+                
+                # Mostrar las métricas dinámicas
+                col_dyn1, col_dyn2, col_dyn3 = st.columns(3)
+                col_dyn1.metric("💸 Costo Acumulado", costo_acumulado)
+                col_dyn2.metric("📦 Carga en el Camión", f"{demanda_acumulada} / {cap_max}")
+                
+                capacidad_restante = cap_max - demanda_acumulada
+                if capacidad_restante >= 0:
+                    col_dyn3.metric("✅ Capacidad Restante", capacidad_restante)
                 else:
-                    st.success("✅ Capacidad respetada.")
+                    col_dyn3.metric("⚠️ Exceso de Carga", capacidad_restante)
+
+                # --- 2. GRÁFICA (En medio y expandida) ---
+                with st.spinner(f"Trazando el recorrido..."):
+                    nombre_meta = st.session_state.get('meta_usada', 'Solución Inicial')
+                    fig, texto_leyenda = viz.dibujar_rutas(
+                        G, mejor_solucion, data, 
+                        ruta_idx=idx, metaheuristica=nombre_meta, paso_limite=paso_actual
+                    )
                     
-            with st.spinner(f"Trazando el recorrido de la {vista}..."):
-                fig, texto_leyenda = viz.dibujar_rutas(st.session_state['grafo'], mejor_solucion, data, ruta_idx=idx)
-                with col_grafica:
-                    st.plotly_chart(fig, use_container_width=True)
-                with col_texto:
-                    # El texto se muestra limpio y sin estorbar a la gráfica
+                    # Renderizamos la gráfica CON KEY FIJO para que no se destruya al presionar botones
+                    st.plotly_chart(fig, use_container_width=True, key=f"plot_ruta_{idx}")
+                
+                # --- 3. DETALLE ESCRITO (Abajo) ---
+                with st.expander("Ver Bitácora de Viaje Detallada", expanded=True):
                     st.markdown(texto_leyenda)
+
+            # Finalmente, ejecutamos nuestro fragmento aislado
+            reproductor_aislado()
