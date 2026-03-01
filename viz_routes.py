@@ -4,28 +4,25 @@ import plotly.express as px
 import math
 
 def formatear_ruta_texto(ruta, info_tareas):
-    """Crea el string detallado de la ruta: [T1(1→4), T9(9→16), ...]"""
+    """Crea el string detallado de la ruta general: [T1(1→4), T9(9→16), ...]"""
     detalles = []
     for id_tarea in ruta:
         u, v = info_tareas[id_tarea]['nodos']
         detalles.append(f"{id_tarea}({u}→{v})")
     return "[" + ", ".join(detalles) + "]"
 
-def calcular_coordenadas_offset(x0, y0, x1, y1, count, base_offset=0.04):
+def calcular_coordenadas_offset(x0, y0, x1, y1, count, base_offset=0.03):
     """
-    Geometría vectorial: Calcula coordenadas desplazadas lateralmente para 
+    Calcula coordenadas desplazadas lateralmente para 
     evitar sobreposición de flechas cuando se recorre un arco múltiples veces.
     """
     dx, dy = x1 - x0, y1 - y0
     length = math.hypot(dx, dy)
     if length == 0: return x0, y0, x1, y1
 
-    # Vector de dirección normalizado
     nx_dir, ny_dir = dx / length, dy / length
-    # Vector ortogonal (perpendicular) para desplazar a los lados
     ox, oy = -ny_dir, nx_dir 
 
-    # Lógica de "carriles": 0 al centro, 1 a la derecha, 2 a la izquierda, 3 más a la derecha...
     if count == 0:
         shift = 0
     else:
@@ -33,9 +30,9 @@ def calcular_coordenadas_offset(x0, y0, x1, y1, count, base_offset=0.04):
         multiplier = (count + 1) // 2
         shift = sign * multiplier * base_offset
 
-    # Acortamos ligeramente la flecha (inicio y fin) para que no tape el centro del nodo
-    acortar_inicio = 0.05
-    acortar_fin = 0.08
+    # Acortamos menos las flechas porque ahora son más finas
+    acortar_inicio = 0.04
+    acortar_fin = 0.06
     
     x0_adj = x0 + nx_dir * acortar_inicio + ox * shift
     y0_adj = y0 + ny_dir * acortar_inicio + oy * shift
@@ -48,7 +45,6 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
     deposito = data.get('DEPOSITO', 1)
     info_tareas = {t['tarea']: t for t in data.get('LISTA_ARISTAS_REQ', [])}
 
-    # Posiciones de los nodos limitadas entre -1 y 1
     pos = nx.spring_layout(G, k=k_layout, iterations=200, seed=42)
     fig = go.Figure()
 
@@ -65,8 +61,11 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
 
     annotations = []
     texto_leyenda = ""
-    # Diccionario para contar cuántas veces se recorre un arco y separar las flechas
     conteo_arcos = {} 
+
+    # TAMAÑO DE FLECHAS REDUCIDO PARA MAYOR ELEGANCIA
+    ARR_SIZE = 1.0   # Antes era 1.5
+    ARR_WIDTH = 1.8  # Antes era 2.5
 
     # ==========================================
     # MODO DETALLE (Una sola ruta)
@@ -77,7 +76,10 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
 
         ruta = solucion[ruta_idx]
         nodo_actual = deposito
-        texto_leyenda = f"**Secuencia de Tareas:**\n\n{formatear_ruta_texto(ruta, info_tareas)}"
+        
+        # SOLUCIÓN 2: TEXTO SÚPER DETALLADO DEL RECORRIDO (Con DH)
+        texto_detallado = f"### 📍 Recorrido Completo: Ruta {ruta_idx + 1}\n\n"
+        texto_detallado += f"🏁 **Inicio en Depósito ({deposito})**\n\n"
 
         for id_tarea in ruta:
             tarea = info_tareas[id_tarea]
@@ -86,6 +88,9 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
             # A) Deadheading (Naranja)
             if nodo_actual != u:
                 camino_dh = nx.shortest_path(G, source=nodo_actual, target=u, weight='cost')
+                str_dh = " → ".join(map(str, camino_dh))
+                texto_detallado += f"🔸 *Viaje vacío (DH):* `[{str_dh}]`\n"
+                
                 for i in range(len(camino_dh) - 1):
                     n1, n2 = camino_dh[i], camino_dh[i+1]
                     arco = tuple(sorted((n1, n2)))
@@ -95,21 +100,26 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
                     conteo_arcos[arco] = count + 1
                     
                     annotations.append(dict(ax=x0, ay=y0, axref='x', ayref='y', x=x1, y=y1, xref='x', yref='y',
-                                            showarrow=True, arrowhead=2, arrowsize=1.5, arrowwidth=2.5, arrowcolor='#e67e22'))
+                                            showarrow=True, arrowhead=2, arrowsize=ARR_SIZE, arrowwidth=ARR_WIDTH, arrowcolor='#e67e22'))
 
             # B) Servicio (Verde)
+            texto_detallado += f"🟩 **Servicio {id_tarea}:** `({u} → {v})`\n"
+            
             arco_serv = tuple(sorted((u, v)))
             count_serv = conteo_arcos.get(arco_serv, 0)
             x0_s, y0_s, x1_s, y1_s = calcular_coordenadas_offset(pos[u][0], pos[u][1], pos[v][0], pos[v][1], count_serv)
             conteo_arcos[arco_serv] = count_serv + 1
             
             annotations.append(dict(ax=x0_s, ay=y0_s, axref='x', ayref='y', x=x1_s, y=y1_s, xref='x', yref='y',
-                                    showarrow=True, arrowhead=2, arrowsize=1.5, arrowwidth=2.5, arrowcolor='#2ecc71'))
+                                    showarrow=True, arrowhead=2, arrowsize=ARR_SIZE, arrowwidth=ARR_WIDTH+1.5, arrowcolor='#2ecc71'))
             nodo_actual = v
 
         # C) Regreso al Depósito (Naranja)
         if nodo_actual != deposito:
             camino_ret = nx.shortest_path(G, source=nodo_actual, target=deposito, weight='cost')
+            str_ret = " → ".join(map(str, camino_ret))
+            texto_detallado += f"🔸 *Viaje regreso (DH):* `[{str_ret}]`\n\n"
+            
             for i in range(len(camino_ret) - 1):
                 n1, n2 = camino_ret[i], camino_ret[i+1]
                 arco_ret = tuple(sorted((n1, n2)))
@@ -118,18 +128,21 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
                 conteo_arcos[arco_ret] = count_ret + 1
                 
                 annotations.append(dict(ax=x0, ay=y0, axref='x', ayref='y', x=x1, y=y1, xref='x', yref='y',
-                                        showarrow=True, arrowhead=2, arrowsize=1.5, arrowwidth=2.5, arrowcolor='#e67e22'))
+                                        showarrow=True, arrowhead=2, arrowsize=ARR_SIZE, arrowwidth=ARR_WIDTH, arrowcolor='#e67e22'))
 
-        # Leyenda en la gráfica interactiva
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#2ecc71', width=3), name='Servicio (Tarea)'))
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#e67e22', width=3), name='Deadheading (Viaje)'))
+        texto_detallado += f"🏁 **Fin en Depósito ({deposito})**\n"
+        texto_leyenda = texto_detallado
+
+        # SOLUCIÓN 3: LEYENDA CLARA CON SIGNIFICADO DE COLORES
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#2ecc71', width=3), name='🟩 Servicio (Tarea)'))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#e67e22', width=3, dash='dash'), name='🔸 Deadheading (Viaje vacío)'))
 
     # ==========================================
     # MODO GENERAL (Todas las rutas)
     # ==========================================
     else:
         colores = px.colors.qualitative.Plotly
-        texto_leyenda = "**Secuencias Completas:**\n\n"
+        texto_leyenda = "### 📋 Secuencias Generales\n\n"
 
         for i, ruta in enumerate(solucion):
             if not ruta: continue
@@ -158,11 +171,12 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
                 conteo_arcos[arco] = count + 1
                 
                 annotations.append(dict(ax=x0, ay=y0, axref='x', ayref='y', x=x1, y=y1, xref='x', yref='y',
-                                        showarrow=True, arrowhead=2, arrowsize=1.5, arrowwidth=2.5, arrowcolor=color, opacity=0.9))
+                                        showarrow=True, arrowhead=2, arrowsize=ARR_SIZE, arrowwidth=ARR_WIDTH, arrowcolor=color, opacity=0.85))
             
+            # Nombre limpio para la leyenda (Solo muestra "Ruta 1", "Ruta 2", etc.)
             fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=color, width=3), name=f'Ruta {i+1}'))
 
-    # 2. DIBUJAR LOS NODOS
+    # 2. DIBUJAR NODOS
     node_x, node_y, node_color, node_size, node_text = [], [], [], [], []
     for node in G.nodes():
         x, y = pos[node]
@@ -181,12 +195,13 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
         showlegend=False
     ))
 
-    # 3. LÓGICA DE MÁRGENES (Para que no se corte la imagen)
+    # 3. MÁRGENES
     x_vals = [p[0] for p in pos.values()]
     y_vals = [p[1] for p in pos.values()]
-    x_pad = (max(x_vals) - min(x_vals)) * 0.15 # 15% de margen extra
+    x_pad = (max(x_vals) - min(x_vals)) * 0.15 
     y_pad = (max(y_vals) - min(y_vals)) * 0.15
 
+    # SOLUCIÓN 1: DESACTIVAR CLICS EN LA LEYENDA (itemclick=False)
     fig.update_layout(
         annotations=annotations,
         hovermode='closest',
@@ -195,8 +210,12 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5):
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[min(y_vals)-y_pad, max(y_vals)+y_pad]),
         margin=dict(l=20, r=20, t=30, b=20),
         height=700,
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(255, 255, 255, 0.8)")
+        legend=dict(
+            yanchor="top", y=0.99, xanchor="left", x=0.01, 
+            bgcolor="rgba(255, 255, 255, 0.9)",
+            bordercolor="lightgray", borderwidth=1,
+            itemclick=False, itemdoubleclick=False # <- Esto apaga el comportamiento de aislamiento
+        )
     )
     
-    # Ahora devolvemos DOS cosas: La figura limpia, y el texto para ponerlo afuera
     return fig, texto_leyenda
