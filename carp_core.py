@@ -441,3 +441,90 @@ def aplicar_y_evaluar_vecindario(solucion, data, G, matriz_distancias, operador=
     costos_rutas, costo_total_solucion, texto_eval = calcular_y_mostrar_rutas_compacto(nueva, data, G)
     
     return nueva, costo_total_solucion, reporte_debug + texto_eval
+
+
+import math
+
+# ==========================================
+# 5. METAHEURÍSTICAS (ALTA VELOCIDAD)
+# ==========================================
+
+def calcular_costo_rapido(solucion, data, matriz_distancias):
+    """Calcula el costo total de una solución en O(1) usando la matriz precalculada."""
+    deposito = data.get('DEPOSITO', 1)
+    info_tareas = {t['tarea']: t for t in data.get('LISTA_ARISTAS_REQ', [])}
+    costo_total = 0
+    
+    for ruta in solucion:
+        if not ruta: continue
+        nodo_actual = deposito
+        for id_tarea in ruta:
+            tarea = info_tareas[id_tarea]
+            u, v = tarea['nodos']
+            costo_total += matriz_distancias[nodo_actual][u] + tarea['costo']
+            nodo_actual = v
+        costo_total += matriz_distancias[nodo_actual][deposito]
+        
+    return costo_total
+
+def generar_vecino_rapido(solucion, data, matriz_distancias, operador="swap", p_inter=0.5, max_intentos=50):
+    """Genera un vecino factible sin generar reportes de texto para máxima velocidad."""
+    intentos, num_vehiculos = 0, len(solucion)
+    
+    while intentos < max_intentos:
+        intentos += 1
+        nueva = copy.deepcopy(solucion)
+        activas = [i for i, r in enumerate(nueva) if len(r) > 0]
+        if not activas: return solucion, False
+            
+        es_inter = (random.random() < p_inter) and (len(activas) >= 2)
+        rutas_modificadas = set()
+        
+        op_actual = random.choice(["swap", "insertion", "inversion"]) if operador == "mixto" else operador
+        
+        try:
+            if op_actual == "swap":
+                if es_inter: r1, r2 = random.sample(activas, 2)
+                else:
+                    r1 = r2 = random.choice(activas)
+                    if len(nueva[r1]) < 2: continue
+                i1, i2 = random.randrange(len(nueva[r1])), random.randrange(len(nueva[r2]))
+                nueva[r1][i1], nueva[r2][i2] = nueva[r2][i2], nueva[r1][i1]
+                rutas_modificadas.update([r1, r2])
+                
+            elif op_actual == "insertion":
+                r_orig = random.choice(activas)
+                if es_inter:
+                    rutas_posibles = [i for i in range(num_vehiculos) if i != r_orig]
+                    if not rutas_posibles: continue
+                    r_dest = random.choice(rutas_posibles)
+                else:
+                    r_dest = r_orig
+                    if len(nueva[r_orig]) < 2: continue
+                i_orig = random.randrange(len(nueva[r_orig]))
+                t_movida = nueva[r_orig].pop(i_orig)
+                i_dest = random.randint(0, len(nueva[r_dest]))
+                nueva[r_dest].insert(i_dest, t_movida)
+                rutas_modificadas.update([r_orig, r_dest])
+                
+            elif op_actual == "inversion":
+                rutas_validas = [r for r in activas if len(nueva[r]) >= 2]
+                if not rutas_validas: continue
+                r_idx = random.choice(rutas_validas)
+                a, b = random.sample(range(len(nueva[r_idx])), 2)
+                i, j = min(a, b), max(a, b)
+                nueva[r_idx][i:j+1] = nueva[r_idx][i:j+1][::-1]
+                rutas_modificadas.add(r_idx)
+        except ValueError:
+            continue # Atrapa errores si sample o randrange fallan por listas vacías
+            
+        movimiento_factible = True
+        for r_idx in rutas_modificadas:
+            if not es_ruta_factible(nueva[r_idx], data, matriz_distancias):
+                movimiento_factible = False; break
+                
+        if movimiento_factible:
+            return nueva, True
+
+    return solucion, False
+
