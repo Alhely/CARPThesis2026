@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 import carp_core as carp
 import meta_sa as sa
-import viz_routes as viz  # Tu nuevo módulo de visualización interactiva (Plotly)
+import viz_routes as viz
 
 st.set_page_config(page_title="CARP Optimizer", page_icon="🚛", layout="wide")
 st.title("🚛 Optimizador CARP")
@@ -24,24 +24,18 @@ if uploaded_file is not None:
 
     if st.sidebar.button("🚀 Inicializar Entorno"):
         with st.spinner("Procesando instancia y distancias..."):
-            # 1. Usar funciones del motor core
             d_noreq = carp.leer_carplib_dat(temp_path)
             ruta_run, logger = carp.iniciar_ejecucion(d_noreq, base_dir="runs_carp_ui")
             
-            # 2. Generar red base
             grafo = carp.generar_grafo_limpio(d_noreq, carpeta_salida=ruta_run)
             distancias = carp.calcular_matriz_distancias(grafo)
-            
-            # 3. Solución inicial
             init_sol = carp.generar_solucion_inicial_aleatoria(d_noreq, distancias)
             
-            # Capturar impresión en consola para que no ensucie la terminal innecesariamente
             captura = io.StringIO()
             sys.stdout = captura
             costos_init, costo_tot, txt_reporte = carp.calcular_y_mostrar_rutas_compacto(init_sol, d_noreq, grafo)
             sys.stdout = sys.__stdout__
             
-            # 4. Guardar estado
             st.session_state.update({
                 'd_noreq': d_noreq, 'ruta_run': ruta_run, 'logger': logger,
                 'grafo': grafo, 'distancias': distancias,
@@ -57,7 +51,6 @@ if uploaded_file is not None:
 if 'd_noreq' in st.session_state:
     data = st.session_state['d_noreq']
     
-    # --- Métricas Globales ---
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Instancia", data.get("NOMBRE", "N/A"))
     c2.metric("Vehículos", data.get("VEHICULOS", 0))
@@ -90,7 +83,6 @@ if 'd_noreq' in st.session_state:
                     st.session_state['distancias'], operador=op_manual, max_intentos=50
                 )
                 if vecino != st.session_state['solucion_actual']:
-                    # Si mejora el global, lo guardamos
                     if c_vec < st.session_state['mejor_costo_global']:
                          st.session_state['mejor_solucion_global'] = vecino
                          st.session_state['mejor_costo_global'] = c_vec
@@ -111,13 +103,10 @@ if 'd_noreq' in st.session_state:
 
         if st.button("🔥 Iniciar Optimización", use_container_width=True):
             with st.spinner(f"Ejecutando Recocido Simulado usando el operador: {operador_sa.upper()}..."):
-                
                 mejor_sol, mejor_costo, historial, stats = sa.optimizar(
                     st.session_state['mejor_solucion_global'], data, st.session_state['distancias'],
                     t_inicial, alfa, iter_por_t, t_final, operador_sa
                 )
-                
-                # Actualizar si encontramos un nuevo récord
                 if mejor_costo < st.session_state['mejor_costo_global']:
                     st.session_state['mejor_solucion_global'] = mejor_sol
                     st.session_state['mejor_costo_global'] = mejor_costo
@@ -127,83 +116,76 @@ if 'd_noreq' in st.session_state:
                 _, _, txt_mejor = carp.calcular_y_mostrar_rutas_compacto(mejor_sol, data, st.session_state['grafo'])
                 sys.stdout = sys.__stdout__
                 
-                # Guardar logs en la carpeta de ejecución
                 carp.guardar_objeto_automatico(st.session_state['ruta_run'], "SA_mejor_solucion", mejor_sol)
                 carp.guardar_objeto_automatico(st.session_state['ruta_run'], "SA_estadisticas", stats)
                 
             st.success("¡Optimización finalizada con éxito!")
             
-            # --- PANEL DE TRANSPARENCIA ---
             st.markdown("### 🔍 Transparencia del Algoritmo")
-            st.info(f"**Operador usado:** `{stats['operador_usado'].upper()}`")
-            
             st_col1, st_col2, st_col3, st_col4 = st.columns(4)
             st_col1.metric("Intentos Totales", f"{stats['iteraciones_totales']:,}")
             tasa_factible = (stats['vecinos_factibles'] / stats['iteraciones_totales']) * 100 if stats['iteraciones_totales'] > 0 else 0
             st_col2.metric("Vecinos Factibles", f"{stats['vecinos_factibles']:,}", f"{tasa_factible:.1f}% de éxito")
             st_col3.metric("Movimientos Aceptados", f"{stats['movimientos_aceptados']:,}")
             st_col4.metric("Nuevos Óptimos Encontrados", f"{stats['mejoras_globales']:,}")
-            
             st.divider()
             
-            # --- RESULTADOS FINALES ---
-            st.markdown("### 🏆 Resultados del Costo")
             c_res1, c_res2, c_res3 = st.columns(3)
             c_res1.metric("Costo Antes del SA", st.session_state['costo_inicial'])
             c_res2.metric("Costo Tras SA", mejor_costo, delta=int(mejor_costo - st.session_state['costo_inicial']), delta_color="inverse")
             mejora_pct = ((st.session_state['costo_inicial'] - mejor_costo) / st.session_state['costo_inicial']) * 100
             c_res3.metric("% de Mejora", f"{mejora_pct:.2f}%")
 
-            st.markdown("### Curva de Convergencia")
             df_historial = pd.DataFrame(historial, columns=["Costo"])
             st.line_chart(df_historial, use_container_width=True)
-            
-            with st.expander("Ver Reporte de la Mejor Solución", expanded=False):
-                st.text(txt_mejor)
 
-    # --- PESTAÑA 3: MAPA DE RUTAS (INTERACTIVO CON PLOTLY) ---
+    # --- PESTAÑA 3: MAPA DE RUTAS (LIMPIA Y ORDENADA) ---
     with tab3:
-        st.markdown("### 🗺️ Visualización de la Mejor Solución")
+        st.markdown("### 🗺️ Mapa Interactivo de Rutas")
         mejor_solucion = st.session_state['mejor_solucion_global']
         
-        # Calcular costos sin imprimir en consola
         captura = io.StringIO()
         sys.stdout = captura
         costos_por_ruta, costo_total_mejor, _ = carp.calcular_y_mostrar_rutas_compacto(mejor_solucion, data, st.session_state['grafo'])
         sys.stdout = sys.__stdout__
         
-        # Selector
         opciones = ["Visión General (Todas las Rutas)"] + [f"Ruta {i+1}" for i in range(len(mejor_solucion)) if mejor_solucion[i]]
         vista = st.selectbox("Selecciona qué deseas visualizar:", opciones)
         
         st.divider()
         
+        # Dividimos la pantalla: 70% Gráfica, 30% Cuadro de Texto de la Leyenda
+        col_grafica, col_texto = st.columns([7, 3])
+        
         if vista == "Visión General (Todas las Rutas)":
-            st.metric("Costo Total de la Solución Global", costo_total_mejor)
-            
-            with st.spinner("Dibujando el mapa interactivo completo..."):
-                fig = viz.dibujar_rutas(st.session_state['grafo'], mejor_solucion, data, ruta_idx=None)
-                st.plotly_chart(fig, use_container_width=True) # <-- Renderizado con Plotly
+            with col_texto:
+                st.info(f"**Costo Total:** {costo_total_mejor}")
+                
+            with st.spinner("Dibujando el mapa..."):
+                fig, texto_leyenda = viz.dibujar_rutas(st.session_state['grafo'], mejor_solucion, data, ruta_idx=None)
+                with col_grafica:
+                    st.plotly_chart(fig, use_container_width=True)
+                with col_texto:
+                    # El texto se muestra limpio y sin estorbar a la gráfica
+                    st.markdown(texto_leyenda)
                 
         else:
             idx = int(vista.replace("Ruta ", "")) - 1
-            
-            # Calcular demanda específica
             cap_max = data.get('CAPACIDAD', 0)
             info_tareas = {t['tarea']: t['demanda'] for t in data.get('LISTA_ARISTAS_REQ', [])}
             demanda_ruta = sum(info_tareas[t] for t in mejor_solucion[idx])
             
-            # Panel de Métricas Individuales
-            col_m1, col_m2, col_m3 = st.columns(3)
-            col_m1.metric(f"Costo de la {vista}", costos_por_ruta[idx])
-            col_m2.metric("Demanda Total", demanda_ruta)
-            col_m3.metric("Capacidad Máxima", cap_max)
-            
-            if demanda_ruta > cap_max:
-                st.error("⚠️ Capacidad excedida en esta ruta.")
-            else:
-                st.success(f"✅ Capacidad respetada (Restante: {cap_max - demanda_ruta})")
-                
+            with col_texto:
+                st.info(f"**Costo Ruta:** {costos_por_ruta[idx]}\n\n**Demanda:** {demanda_ruta} / {cap_max}")
+                if demanda_ruta > cap_max:
+                    st.error("⚠️ Capacidad excedida.")
+                else:
+                    st.success("✅ Capacidad respetada.")
+                    
             with st.spinner(f"Trazando el recorrido de la {vista}..."):
-                fig = viz.dibujar_rutas(st.session_state['grafo'], mejor_solucion, data, ruta_idx=idx)
-                st.plotly_chart(fig, use_container_width=True) # <-- Renderizado con Plotly
+                fig, texto_leyenda = viz.dibujar_rutas(st.session_state['grafo'], mejor_solucion, data, ruta_idx=idx)
+                with col_grafica:
+                    st.plotly_chart(fig, use_container_width=True)
+                with col_texto:
+                    # El texto se muestra limpio y sin estorbar a la gráfica
+                    st.markdown(texto_leyenda)
