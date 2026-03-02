@@ -5,8 +5,9 @@ import tempfile
 import streamlit as st
 import pandas as pd
 import carp_core as carp
-import meta_sa as sa
 import viz_routes as viz
+import meta_sa as sa
+import meta_ts as ts  
 
 st.set_page_config(page_title="CARP Optimizer", page_icon="🚛", layout="wide")
 st.title("🚛 Optimizador CARP")
@@ -272,69 +273,137 @@ if 'd_noreq' in st.session_state:
             st.warning("👈 Oprime el botón superior '🎲 Generar Solución Inicial Aleatoria' para inicializar los datos.")
 
 
-    # ==========================================
-    # PESTAÑA 3: RECOCIDO SIMULADO (SA)
+# ==========================================
+    # PESTAÑA 3: CENTRO DE METAHEURÍSTICAS
     # ==========================================
     with tab3:
         if st.session_state.get('sol_inicial') is None:
-            st.warning("⚠️ Debes generar una Solución Inicial en la pestaña 'Solución y Vecindarios' antes de usar la Metaheurística.")
+            st.warning("⚠️ Debes generar una Solución Inicial en la pestaña 'Solución y Vecindarios' antes de optimizar.")
         else:
-            st.markdown("### Configuración de Parámetros")
-            col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
-            with col_p1: t_inicial = st.number_input("Temp. Inicial ($T_0$)", value=1000.0, step=100.0)
-            with col_p2: alfa = st.number_input("Tasa Enfriamiento ($\\alpha$)", value=0.95, step=0.01, format="%.2f")
-            with col_p3: iter_por_t = st.number_input("Iteraciones (Iter/T)", value=100, step=10)
-            with col_p4: t_final = st.number_input("Temp. de Paro", value=0.1, step=0.1)
-            with col_p5: operador_sa = st.selectbox("Operador de Búsqueda", ["swap", "insertion", "inversion", "mixto"])
+            st.markdown("### ⚙️ Motor de Optimización Avanzada")
+            
+            # 1. SELECTOR DINÁMICO DE ALGORITMO
+            meta_seleccionada = st.selectbox(
+                "🧠 Selecciona la Metaheurística a ejecutar:",
+                ["Recocido Simulado (SA)", "Búsqueda Tabú (TS)"],
+                help="El algoritmo partirá desde la Mejor Solución Global encontrada hasta el momento."
+            )
+            
+            st.divider()
+            
+            # 2. PANEL DE PARÁMETROS DINÁMICOS
+            st.markdown(f"#### 🎛️ Configuración para {meta_seleccionada}")
+            
+            if meta_seleccionada == "Recocido Simulado (SA)":
+                st.info("🔥 **Comportamiento:** Acepta peores soluciones con una probabilidad que disminuye con la temperatura (Enfriamiento). Ideal para salir de óptimos locales suavemente.")
+                col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
+                with col_p1: t_inicial = st.number_input("Temp. Inicial ($T_0$)", value=1000.0, step=100.0)
+                with col_p2: alfa = st.number_input("Enfriamiento ($\\alpha$)", value=0.95, step=0.01, format="%.2f")
+                with col_p3: iter_por_t = st.number_input("Iteraciones / T", value=100, step=10)
+                with col_p4: t_final = st.number_input("Temp. de Paro", value=0.1, step=0.1)
+                with col_p5: operador_meta = st.selectbox("Operador SA", ["swap", "insertion", "inversion", "mixto"], key="op_sa")
 
-            if st.button("🔥 Iniciar Optimización SA", use_container_width=True):
-                with st.spinner(f"Ejecutando Recocido Simulado usando: {operador_sa.upper()}..."):
-                    mejor_sol, mejor_costo, historial, stats = sa.optimizar(
-                        st.session_state['mejor_solucion_global'], data, st.session_state['distancias'],
-                        t_inicial, alfa, iter_por_t, t_final, operador_sa
-                    )
-                    
+            elif meta_seleccionada == "Búsqueda Tabú (TS)":
+                st.info("🧠 **Comportamiento:** Explora múltiples candidatos por iteración y toma el mejor. Usa una memoria estricta para no repetir configuraciones recientes (Anti-Ciclos).")
+                
+                col_t1, col_t2, col_t3 = st.columns(3)
+                with col_t1: tenencia_tabu = st.number_input("Tenencia Tabú (Memoria)", value=15, step=1, help="Cuántas soluciones anteriores se prohíben visitar.")
+                with col_t2: max_iteraciones = st.number_input("Iteraciones Máximas", value=100, step=10)
+                with col_t3: tam_vecindario = st.number_input("Candidatos por Iteración", value=20, step=5, help="Cuántos vecinos genera y evalúa a la vez.")
+                
+                # Fila 2 de parámetros de vecindario (Específicos porque la función TS los recibe)
+                col_t4, col_t5, col_t6 = st.columns(3)
+                with col_t4: operador_meta = st.selectbox("Operador Local", ["swap", "insertion", "inversion", "mixto"], key="op_ts")
+                with col_t5: p_inter_meta = st.slider("Prob. Inter-Ruta ($p_{inter}$)", 0.0, 1.0, 0.5, step=0.1, key="p_ts")
+                with col_t6: max_int_meta = st.number_input("Máx. Intentos Factibilidad", value=100, step=10, key="int_ts")
+
+            # 3. EJECUCIÓN UNIFICADA
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button(f"🚀 Iniciar Optimización Global", use_container_width=True, type="primary"):
+                
+                with st.spinner(f"Ejecutando {meta_seleccionada}... Esto puede tomar unos segundos."):
+                    # Enrutamos la ejecución según lo que eligió el usuario
+                    if meta_seleccionada == "Recocido Simulado (SA)":
+                        mejor_sol, mejor_costo, historial, stats = sa.optimizar(
+                            st.session_state['mejor_solucion_global'], data, st.session_state['distancias'],
+                            t_inicial, alfa, iter_por_t, t_final, operador_meta
+                        )
+                        nombre_algoritmo = "Recocido Simulado"
+                        
+                    elif meta_seleccionada == "Búsqueda Tabú (TS)":
+                        # Llamamos al nuevo motor pasando todos sus argumentos específicos
+                        mejor_sol, mejor_costo, historial, stats = ts.optimizar(
+                            solucion_inicial=st.session_state['mejor_solucion_global'], 
+                            costo_inicial=st.session_state['mejor_costo_global'], 
+                            data=data, 
+                            grafo=st.session_state['grafo'], 
+                            distancias=st.session_state['distancias'], 
+                            tenencia_tabu=tenencia_tabu, 
+                            max_iteraciones=max_iteraciones, 
+                            tam_vecindario=tam_vecindario, 
+                            operador=operador_meta, 
+                            p_inter=p_inter_meta, 
+                            max_intentos_vecino=max_int_meta
+                        )
+                        nombre_algoritmo = "Búsqueda Tabú"
+
+                    # 4. ACTUALIZACIÓN DEL ESTADO GLOBAL
                     if mejor_costo < st.session_state['mejor_costo_global']:
                         st.session_state['mejor_solucion_global'] = mejor_sol
                         st.session_state['mejor_costo_global'] = mejor_costo
-                        st.session_state['meta_usada'] = "Recocido Simulado" 
+                        st.session_state['meta_usada'] = nombre_algoritmo
+                        st.toast(f"¡{nombre_algoritmo} encontró un nuevo récord global!", icon="🏆")
                     
-                    captura = io.StringIO()
-                    sys.stdout = captura
-                    _, _, txt_mejor = carp.calcular_y_mostrar_rutas_compacto(mejor_sol, data, st.session_state['grafo'])
-                    sys.stdout = sys.__stdout__
+                    # Guardamos resultados en disco para auditoría
+                    carp.guardar_objeto_automatico(st.session_state['ruta_run'], f"{nombre_algoritmo.replace(' ', '_')}_mejor", mejor_sol)
+                    carp.guardar_objeto_automatico(st.session_state['ruta_run'], f"{nombre_algoritmo.replace(' ', '_')}_stats", stats)
                     
-                    carp.guardar_objeto_automatico(st.session_state['ruta_run'], "SA_mejor_solucion", mejor_sol)
-                    carp.guardar_objeto_automatico(st.session_state['ruta_run'], "SA_estadisticas", stats)
-                    
-                st.success("¡Optimización finalizada con éxito!")
+                # 5. BEAUTIFY: PANEL DE RESULTADOS
+                st.success(f"¡✅ Optimización finalizada con éxito mediante {meta_seleccionada}!")
                 
-                st.markdown("### 🔍 Transparencia del Algoritmo")
-                st_col1, st_col2, st_col3, st_col4 = st.columns(4)
-                st_col1.metric("Intentos Totales", f"{stats['iteraciones_totales']:,}")
-                tasa_factible = (stats['vecinos_factibles'] / stats['iteraciones_totales']) * 100 if stats['iteraciones_totales'] > 0 else 0
-                st_col2.metric("Vecinos Factibles", f"{stats['vecinos_factibles']:,}", f"{tasa_factible:.1f}% de éxito")
-                st_col3.metric("Movimientos Aceptados", f"{stats['movimientos_aceptados']:,}")
-                st_col4.metric("Nuevos Óptimos Encontrados", f"{stats['mejoras_globales']:,}")
+                st.markdown("### 📊 Panel de Rendimiento del Algoritmo")
+                
+                # Métricas dinámicas dependiendo de qué stats escupa el algoritmo
+                metric_cols = st.columns(4)
+                metric_cols[0].metric("Iteraciones Totales", f"{stats.get('iteraciones_totales', 0):,}")
+                
+                if meta_seleccionada == "Recocido Simulado (SA)":
+                    tasa_f = (stats.get('vecinos_factibles', 0) / stats.get('iteraciones_totales', 1)) * 100
+                    metric_cols[1].metric("Vecinos Factibles", f"{stats.get('vecinos_factibles', 0):,}", f"{tasa_f:.1f}%")
+                    metric_cols[2].metric("Movs. Aceptados", f"{stats.get('movimientos_aceptados', 0):,}")
+                elif meta_seleccionada == "Búsqueda Tabú (TS)":
+                    metric_cols[1].metric("Candidatos Evaluados", f"{stats.get('candidatos_evaluados', 0):,}")
+                    metric_cols[2].metric("Aspiraciones Tabú", f"{stats.get('movimientos_tabu_aspirados', 0):,}", help="Movimientos prohibidos que fueron aceptados por ser récords históricos.")
+                
+                metric_cols[3].metric("Nuevos Óptimos Globales", f"{stats.get('mejoras_globales', 0):,}")
+                
                 st.divider()
                 
+                # Impacto en el costo global
                 c_res1, c_res2, c_res3 = st.columns(3)
-                c_res1.metric("Costo Antes del SA", st.session_state['costo_inicial'])
-                c_res2.metric("Costo Tras SA", mejor_costo, delta=int(mejor_costo - st.session_state['costo_inicial']), delta_color="inverse")
-                mejora_pct = ((st.session_state['costo_inicial'] - mejor_costo) / st.session_state['costo_inicial']) * 100
-                c_res3.metric("% de Mejora", f"{mejora_pct:.2f}%")
+                costo_arranque = historial[0] if historial else st.session_state['costo_inicial']
+                c_res1.metric("Costo Antes de Ejecución", costo_arranque)
+                
+                delta_ejecucion = int(mejor_costo - costo_arranque)
+                c_res2.metric("Costo Tras Ejecución", mejor_costo, delta=delta_ejecucion, delta_color="inverse")
+                
+                mejora_pct = ((costo_arranque - mejor_costo) / costo_arranque) * 100 if costo_arranque > 0 else 0
+                c_res3.metric("% de Mejora en esta ronda", f"{mejora_pct:.2f}%")
 
-                df_historial = pd.DataFrame(historial, columns=["Costo"])
-                st.line_chart(df_historial, use_container_width=True)
+                # Gráfica de convergencia interactiva
+                st.markdown("#### 📉 Curva de Convergencia (Costo vs Iteración)")
+                df_historial = pd.DataFrame(historial, columns=["Costo Récord"])
+                st.line_chart(df_historial, use_container_width=True)   
 
-    # ==========================================
+
+# ==========================================
     # PESTAÑA 4: MAPA DE RUTAS (INTERACTIVO)
     # ==========================================
     with tab4:
         if st.session_state.get('mejor_solucion_global') is None:
-            st.warning("⚠️ No hay rutas para mostrar. Genera una Solución Inicial en la pestaña 2 primero.")
+            st.warning("⚠️ No hay rutas para mostrar. Genera una Solución Inicial primero.")
         else:
-            st.markdown("### 🗺️ Mapa Interactivo de Rutas")
+            st.markdown("### 🗺️ Visualizador de Rutas")
             mejor_solucion = st.session_state['mejor_solucion_global']
             
             captura = io.StringIO()
@@ -343,36 +412,95 @@ if 'd_noreq' in st.session_state:
             sys.stdout = sys.__stdout__
             
             opciones = ["Visión General (Todas las Rutas)"] + [f"Ruta {i+1}" for i in range(len(mejor_solucion)) if mejor_solucion[i]]
-            vista = st.selectbox("Selecciona qué deseas visualizar:", opciones)
-            
-            st.divider()
+            vista = st.selectbox("Selecciona vista:", opciones, label_visibility="collapsed") 
             
             if vista == "Visión General (Todas las Rutas)":
                 st.info(f"**Costo Total de la Solución:** {costo_total_mejor}")
                 
-                with st.spinner("Dibujando el mapa completo..."):
+                with st.spinner("Dibujando mapa completo..."):
                     nombre_meta = st.session_state.get('meta_usada', 'Solución Inicial')
                     fig, texto_leyenda = viz.dibujar_rutas(
                         st.session_state['grafo'], mejor_solucion, data, 
                         ruta_idx=None, metaheuristica=nombre_meta
                     )
-                    
                     st.plotly_chart(fig, use_container_width=True, key="plot_general")
                     
-                    with st.expander("Ver Secuencias de Tareas", expanded=True):
+                    with st.expander("Ver Secuencias de Tareas", expanded=False): 
                         st.markdown(texto_leyenda)
                     
             else:
                 idx = int(vista.replace("Ruta ", "")) - 1
                 cap_max = data.get('CAPACIDAD', 0)
                 info_tareas = {t['tarea']: t for t in data.get('LISTA_ARISTAS_REQ', [])}
-                
-                demanda_total_ruta = sum(info_tareas[t]['demanda'] for t in mejor_solucion[idx])
-                st.info(f"🏁 **Proyección Final de la Ruta {idx + 1}:** Costo Total Estimado = {costos_por_ruta[idx]} | Demanda Total = {demanda_total_ruta} / {cap_max}")
-                st.divider()
 
+                # ---------------------------------------------------------
+                # MODO CINE (Ventana Emergente Gigante con diseño lateral)
+                # ---------------------------------------------------------
+                @st.dialog(f"🎬 MODO CINE: Explorando Ruta {idx + 1}", width="large")
+                def reproductor_fullscreen():
+                    G = st.session_state['grafo']
+                    movimientos = viz.obtener_secuencia_movimientos(G, mejor_solucion[idx], data.get('DEPOSITO', 1), info_tareas)
+                    total_pasos = len(movimientos)
+                    
+                    clave_paso = f"paso_ruta_fs_{idx}"
+                    if clave_paso not in st.session_state:
+                        st.session_state[clave_paso] = 0 
+                    
+                    # Diseño 70/30 en Modo Cine
+                    col_mapa_fs, col_ctrl_fs = st.columns([7, 3])
+                    
+                    with col_ctrl_fs:
+                        st.markdown("#### 🎛️ Controles")
+                        
+                        # Cuadrícula 2x2 para botones
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("⏪ Inicio", use_container_width=True, key="btn_ini_fs"): st.session_state[clave_paso] = 0
+                            if st.button("⏮️ Ant.", use_container_width=True, key="btn_ant_fs"): 
+                                if st.session_state[clave_paso] > 0: st.session_state[clave_paso] -= 1
+                        with c2:
+                            if st.button("Fin ⏩", use_container_width=True, key="btn_fin_fs"): st.session_state[clave_paso] = total_pasos
+                            if st.button("Siguiente ⏭️", use_container_width=True, type="primary", key="btn_sig_fs"):
+                                if st.session_state[clave_paso] < total_pasos: st.session_state[clave_paso] += 1
+                                
+                        paso_actual = st.session_state[clave_paso]
+                        st.progress(paso_actual / total_pasos if total_pasos > 0 else 0)
+                        st.caption(f"Paso **{paso_actual}** de **{total_pasos}**")
+                        
+                        # Cálculos dinámicos
+                        costo_acumulado = 0
+                        demanda_acumulada = 0
+                        for i in range(paso_actual):
+                            mov = movimientos[i]
+                            if mov['tipo'] == 'DH':
+                                costo_acumulado += G[mov['u']][mov['v']]['cost']
+                            else:
+                                tarea_id = mov['tarea']
+                                costo_acumulado += info_tareas[tarea_id]['costo']
+                                demanda_acumulada += info_tareas[tarea_id]['demanda']
+                        
+                        # Métricas apiladas lateralmente
+                        st.divider()
+                        st.metric("💵 Costo Acumulado", int(costo_acumulado))
+                        st.metric("📦 Carga Actual", f"{demanda_acumulada} / {cap_max}")
+                        cap_restante = cap_max - demanda_acumulada
+                        st.metric("✅ Cap. Restante" if cap_restante >= 0 else "⚠️ Exceso", cap_restante)
+
+                    with col_mapa_fs:
+                        with st.spinner("Trazando..."):
+                            nombre_meta = st.session_state.get('meta_usada', 'Solución Inicial')
+                            fig_fs, _ = viz.dibujar_rutas(
+                                G, mejor_solucion, data, 
+                                ruta_idx=idx, metaheuristica=nombre_meta, paso_limite=paso_actual
+                            )
+                            fig_fs.update_layout(height=650, margin=dict(l=0, r=0, t=30, b=0)) # Ajuste de márgenes
+                            st.plotly_chart(fig_fs, use_container_width=True, key=f"plot_ruta_fs_{idx}")
+
+                # ---------------------------------------------------------
+                # VISTA ESTÁNDAR INTEGRADA (También con diseño lateral)
+                # ---------------------------------------------------------
                 @st.fragment
-                def reproductor_aislado():
+                def reproductor_integrado():
                     G = st.session_state['grafo']
                     movimientos = viz.obtener_secuencia_movimientos(G, mejor_solucion[idx], data.get('DEPOSITO', 1), info_tareas)
                     total_pasos = len(movimientos)
@@ -380,57 +508,64 @@ if 'd_noreq' in st.session_state:
                     clave_paso = f"paso_ruta_{idx}"
                     if clave_paso not in st.session_state:
                         st.session_state[clave_paso] = 0 
+                        
+                    # Diseño 70/30 en Pestaña Normal
+                    col_mapa, col_ctrl = st.columns([7, 3])
                     
-                    st.markdown("### ⏯️ Controles de Reproducción")
-                    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
-                    with col_b1:
-                        if st.button("⏪ Inicio", use_container_width=True): st.session_state[clave_paso] = 0
-                    with col_b2:
-                        if st.button("⏮️ Anterior", use_container_width=True): 
-                            if st.session_state[clave_paso] > 0: st.session_state[clave_paso] -= 1
-                    with col_b3:
-                        if st.button("Siguiente ⏭️", use_container_width=True, type="primary"):
-                            if st.session_state[clave_paso] < total_pasos: st.session_state[clave_paso] += 1
-                    with col_b4:
-                        if st.button("Fin ⏩", use_container_width=True): st.session_state[clave_paso] = total_pasos
-                            
-                    paso_actual = st.session_state[clave_paso]
-                    
-                    progreso = paso_actual / total_pasos if total_pasos > 0 else 0
-                    st.progress(progreso)
-                    st.caption(f"Mostrando movimiento **{paso_actual}** de **{total_pasos}**")
-                    
-                    costo_acumulado = 0
-                    demanda_acumulada = 0
-                    
-                    for i in range(paso_actual):
-                        mov = movimientos[i]
-                        if mov['tipo'] == 'DH':
-                            costo_acumulado += G[mov['u']][mov['v']]['cost']
-                        else:
-                            tarea_id = mov['tarea']
-                            costo_acumulado += info_tareas[tarea_id]['costo']
-                            demanda_acumulada += info_tareas[tarea_id]['demanda']
-                    
-                    col_dyn1, col_dyn2, col_dyn3 = st.columns(3)
-                    col_dyn1.metric("💸 Costo Acumulado", costo_acumulado)
-                    col_dyn2.metric("📦 Carga en el Camión", f"{demanda_acumulada} / {cap_max}")
-                    
-                    capacidad_restante = cap_max - demanda_acumulada
-                    if capacidad_restante >= 0:
-                        col_dyn3.metric("✅ Capacidad Restante", capacidad_restante)
-                    else:
-                        col_dyn3.metric("⚠️ Exceso de Carga", capacidad_restante)
+                    with col_ctrl:
+                        st.markdown("#### 🎛️ Controles")
+                        
+                        # Cuadrícula 2x2
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("⏪ Inicio", use_container_width=True, key=f"btn_ini_{idx}"): st.session_state[clave_paso] = 0
+                            if st.button("⏮️ Ant.", use_container_width=True, key=f"btn_ant_{idx}"): 
+                                if st.session_state[clave_paso] > 0: st.session_state[clave_paso] -= 1
+                        with c2:
+                            if st.button("Fin ⏩", use_container_width=True, key=f"btn_fin_{idx}"): st.session_state[clave_paso] = total_pasos
+                            if st.button("Siguiente ⏭️", use_container_width=True, type="primary", key=f"btn_sig_{idx}"):
+                                if st.session_state[clave_paso] < total_pasos: st.session_state[clave_paso] += 1
+                                
+                        paso_actual = st.session_state[clave_paso]
+                        st.progress(paso_actual / total_pasos if total_pasos > 0 else 0)
+                        st.caption(f"Paso **{paso_actual}** de **{total_pasos}**")
+                        
+                        # Cálculos dinámicos
+                        costo_acumulado = 0
+                        demanda_acumulada = 0
+                        for i in range(paso_actual):
+                            mov = movimientos[i]
+                            if mov['tipo'] == 'DH':
+                                costo_acumulado += G[mov['u']][mov['v']]['cost']
+                            else:
+                                tarea_id = mov['tarea']
+                                costo_acumulado += info_tareas[tarea_id]['costo']
+                                demanda_acumulada += info_tareas[tarea_id]['demanda']
+                                
+                        st.divider()
+                        
+                        # Métricas más compactas para no empujar la pantalla
+                        mc1, mc2 = st.columns(2)
+                        mc1.metric("💵 Costo", int(costo_acumulado))
+                        mc2.metric("📦 Carga", f"{demanda_acumulada}/{cap_max}")
+                        
+                        st.divider()
+                        
+                        # El botón de Modo Cine al final del panel de control
+                        if st.button("🎬 Abrir Modo Cine", use_container_width=True, type="secondary", key=f"btn_cine_{idx}"):
+                            reproductor_fullscreen()
 
-                    with st.spinner(f"Trazando el recorrido..."):
-                        nombre_meta = st.session_state.get('meta_usada', 'Solución Inicial')
-                        fig, texto_leyenda = viz.dibujar_rutas(
-                            G, mejor_solucion, data, 
-                            ruta_idx=idx, metaheuristica=nombre_meta, paso_limite=paso_actual
-                        )
-                        st.plotly_chart(fig, use_container_width=True, key=f"plot_ruta_{idx}")
+                    with col_mapa:
+                        with st.spinner("Trazando..."):
+                            nombre_meta = st.session_state.get('meta_usada', 'Solución Inicial')
+                            fig, texto_leyenda = viz.dibujar_rutas(
+                                G, mejor_solucion, data, 
+                                ruta_idx=idx, metaheuristica=nombre_meta, paso_limite=paso_actual
+                            )
+                            fig.update_layout(height=550, margin=dict(l=0, r=0, t=30, b=0))
+                            st.plotly_chart(fig, use_container_width=True, key=f"plot_ruta_{idx}")
                     
-                    with st.expander("Ver Bitácora de Viaje Detallada", expanded=True):
+                    with st.expander("📜 Ver Bitácora Detallada del Viaje", expanded=False):
                         st.markdown(texto_leyenda)
 
-                reproductor_aislado()
+                reproductor_integrado()
