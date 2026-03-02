@@ -14,19 +14,28 @@ def calcular_coordenadas_offset(x0, y0, x1, y1, count, base_offset=0.03):
     dx, dy = x1 - x0, y1 - y0
     length = math.hypot(dx, dy)
     if length == 0: return x0, y0, x1, y1
+
     nx_dir, ny_dir = dx / length, dy / length
     ox, oy = -ny_dir, nx_dir 
-    if count == 0: shift = 0
+
+    if count == 0:
+        shift = 0
     else:
         sign = 1 if count % 2 != 0 else -1
         multiplier = (count + 1) // 2
         shift = sign * multiplier * base_offset
-    acortar_inicio, acortar_fin = 0.04, 0.06
-    return (x0 + nx_dir * acortar_inicio + ox * shift, y0 + ny_dir * acortar_inicio + oy * shift,
-            x1 - nx_dir * acortar_fin + ox * shift, y1 - ny_dir * acortar_fin + oy * shift)
+
+    acortar_inicio = 0.04
+    acortar_fin = 0.06
+    
+    x0_adj = x0 + nx_dir * acortar_inicio + ox * shift
+    y0_adj = y0 + ny_dir * acortar_inicio + oy * shift
+    x1_adj = x1 - nx_dir * acortar_fin + ox * shift
+    y1_adj = y1 - ny_dir * acortar_fin + oy * shift
+
+    return x0_adj, y0_adj, x1_adj, y1_adj
 
 def obtener_secuencia_movimientos(G, ruta, deposito, info_tareas):
-    """Descompone una ruta en una lista cronológica de movimientos calle por calle."""
     movimientos = []
     nodo_actual = deposito
     for id_tarea in ruta:
@@ -52,39 +61,79 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5, metaheuristica
     pos = nx.spring_layout(G, k=k_layout, iterations=200, seed=42)
     fig = go.Figure()
 
-    # 1. RED BASE
-    edge_x, edge_y = [], []
-    for u, v in G.edges():
-        x0, y0 = pos[u]; x1, y1 = pos[v]
-        edge_x.extend([x0, x1, None]); edge_y.extend([y0, y1, None])
-    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1, color='#e0e0e0'), hoverinfo='none', showlegend=False))
+    # ==========================================
+    # 1. DIBUJAR ARISTAS BASE
+    # ==========================================
+    req_edges = set()
+    for t in data.get('LISTA_ARISTAS_REQ', []):
+        req_edges.add(tuple(sorted(t['nodos'])))
+
+    if not solucion:
+        # MODO: GRAFO ORIGINAL ESTÁTICO
+        edge_x_req, edge_y_req = [], []
+        edge_x_noreq, edge_y_noreq = [], []
+        
+        for u, v in G.edges():
+            x0, y0 = pos[u]; x1, y1 = pos[v]
+            if tuple(sorted((u, v))) in req_edges:
+                edge_x_req.extend([x0, x1, None])
+                edge_y_req.extend([y0, y1, None])
+            else:
+                edge_x_noreq.extend([x0, x1, None])
+                edge_y_noreq.extend([y0, y1, None])
+
+        # Se removieron los emojis del 'name' para una leyenda profesional
+        fig.add_trace(go.Scatter(
+            x=edge_x_req if edge_x_req else [None], 
+            y=edge_y_req if edge_y_req else [None], 
+            mode='lines', line=dict(width=3.5, color='#2980b9'),
+            hoverinfo='none', showlegend=True, name='Arista Requerida (Con Demanda)'
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=edge_x_noreq if edge_x_noreq else [None], 
+            y=edge_y_noreq if edge_y_noreq else [None], 
+            mode='lines', line=dict(width=1.5, color='#bdc3c7', dash='dash'),
+            hoverinfo='none', showlegend=True, name='Arista No Requerida (Solo Tránsito)'
+        ))
+    else:
+        # MODO: RUTAS SUPERPUESTAS
+        edge_x, edge_y = [], []
+        for u, v in G.edges():
+            x0, y0 = pos[u]; x1, y1 = pos[v]
+            edge_x.extend([x0, x1, None]); edge_y.extend([y0, y1, None])
+
+        fig.add_trace(go.Scatter(
+            x=edge_x, y=edge_y, mode='lines', line=dict(width=1, color='#e0e0e0'),
+            hoverinfo='none', showlegend=False, name='Red Base'
+        ))
 
     annotations = []
     texto_leyenda = ""
+    conteo_arcos = {} 
     titulo_grafica = ""
-    ARR_SIZE, ARR_WIDTH = 1.0, 1.8  
+
+    ARR_SIZE = 1.0   
+    ARR_WIDTH = 1.8  
 
     # ==========================================
-    # MODO DETALLE (El Reproductor Interactivo)
+    # MODO DETALLE (Una sola ruta)
     # ==========================================
     if ruta_idx is not None:
         if ruta_idx >= len(solucion) or not solucion[ruta_idx]:
-            return fig, "Ruta vacía."
+            return fig, "La ruta seleccionada está vacía."
 
         movimientos = obtener_secuencia_movimientos(G, solucion[ruta_idx], deposito, info_tareas)
         total_pasos = len(movimientos)
         paso_actual = total_pasos if paso_limite is None else paso_limite
 
         texto_detallado = f"### 📍 Bitácora de Viaje\n\n**Ruta {ruta_idx + 1}**\n\n---\n\n🏁 **Inicio ({deposito})**\n\n"
-        
-        conteo_arcos = {}
-        nodo_camion = deposito # Dónde está el camión ahora mismo
+        nodo_camion = deposito 
 
-        # Dibujar solo hasta el paso actual
         for i in range(paso_actual):
             mov = movimientos[i]
             u, v, tipo, tarea = mov['u'], mov['v'], mov['tipo'], mov['tarea']
-            nodo_camion = v # El camión avanza
+            nodo_camion = v 
             
             arco = tuple(sorted((u, v)))
             count = conteo_arcos.get(arco, 0)
@@ -98,7 +147,6 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5, metaheuristica
                 annotations.append(dict(ax=x0, ay=y0, axref='x', ayref='y', x=x1, y=y1, xref='x', yref='y',
                                         showarrow=True, arrowhead=2, arrowsize=ARR_SIZE, arrowwidth=ARR_WIDTH+1.5, arrowcolor='#2ecc71'))
 
-        # Construir el texto completo pero resaltando dónde estamos
         for i, mov in enumerate(movimientos):
             marca = "👉 " if i == paso_actual - 1 else ""
             if mov['tipo'] == 'DH':
@@ -111,51 +159,61 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5, metaheuristica
         
         texto_leyenda = texto_detallado
 
-        # DIBUJAR EL CAMIÓN 🚚 (Si ya avanzó algún paso)
-        if paso_actual > 0 or paso_actual == 0:
+        if paso_actual >= 0:
             fig.add_trace(go.Scatter(
-                x=[pos[nodo_camion][0]], y=[pos[nodo_camion][1] + 0.05], # Un poco arriba del nodo
+                x=[pos[nodo_camion][0]], y=[pos[nodo_camion][1] + 0.05], 
                 mode='text', text=['🚚'], textfont=dict(size=35),
                 hoverinfo='none', showlegend=False
             ))
 
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#2ecc71', width=3), name='🟩 Servicio'))
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#e67e22', width=3, dash='dash'), name='🔸 Viaje vacío'))
+        # Emojis removidos de la leyenda interactiva también
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#2ecc71', width=3), name='Servicio (Tarea)'))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='#e67e22', width=3, dash='dash'), name='Deadheading (Viaje Vacío)'))
+        
         titulo_grafica = f"Instancia: {nombre_instancia} | {metaheuristica} | Ruta {ruta_idx + 1}"
 
     # ==========================================
-    # MODO GENERAL (Todas las rutas - Sin animación)
+    # MODO GENERAL (Todas las rutas o Grafo Base)
     # ==========================================
     else:
-        colores = px.colors.qualitative.Plotly
-        texto_leyenda = "### 📋 Secuencias Generales\n\n"
-        conteo_arcos = {}
+        if not solucion:
+            texto_leyenda = ""
+            titulo_grafica = f"Instancia: {nombre_instancia} | {metaheuristica}"
+        else:
+            colores = px.colors.qualitative.Plotly
+            texto_leyenda = "### 📋 Secuencias Generales\n\n"
 
-        for i, ruta in enumerate(solucion):
-            if not ruta: continue
-            color = colores[i % len(colores)]
-            texto_leyenda += f"**Ruta {i+1}:**\n`{formatear_ruta_texto(ruta, info_tareas)}`\n\n"
-            movimientos = obtener_secuencia_movimientos(G, ruta, deposito, info_tareas)
-            
-            for mov in movimientos:
-                u, v = mov['u'], mov['v']
-                arco = tuple(sorted((u, v)))
-                count = conteo_arcos.get(arco, 0)
-                x0, y0, x1, y1 = calcular_coordenadas_offset(pos[u][0], pos[u][1], pos[v][0], pos[v][1], count)
-                conteo_arcos[arco] = count + 1
-                annotations.append(dict(ax=x0, ay=y0, axref='x', ayref='y', x=x1, y=y1, xref='x', yref='y',
-                                        showarrow=True, arrowhead=2, arrowsize=ARR_SIZE, arrowwidth=ARR_WIDTH, arrowcolor=color, opacity=0.85))
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=color, width=3), name=f'Ruta {i+1}'))
-        titulo_grafica = f"Instancia: {nombre_instancia} | {metaheuristica} | Rutas Completas"
+            for i, ruta in enumerate(solucion):
+                if not ruta: continue
+                color = colores[i % len(colores)]
+                texto_leyenda += f"**Ruta {i+1}:**\n`{formatear_ruta_texto(ruta, info_tareas)}`\n\n"
+                
+                movimientos = obtener_secuencia_movimientos(G, ruta, deposito, info_tareas)
+                for mov in movimientos:
+                    u, v = mov['u'], mov['v']
+                    arco = tuple(sorted((u, v)))
+                    count = conteo_arcos.get(arco, 0)
+                    x0, y0, x1, y1 = calcular_coordenadas_offset(pos[u][0], pos[u][1], pos[v][0], pos[v][1], count)
+                    conteo_arcos[arco] = count + 1
+                    annotations.append(dict(ax=x0, ay=y0, axref='x', ayref='y', x=x1, y=y1, xref='x', yref='y',
+                                            showarrow=True, arrowhead=2, arrowsize=ARR_SIZE, arrowwidth=ARR_WIDTH, arrowcolor=color, opacity=0.85))
+                
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=color, width=3), name=f'Ruta {i+1}'))
 
-    # NODOS
+            titulo_grafica = f"Instancia: {nombre_instancia} | {metaheuristica} | Rutas Completas"
+
+    # ==========================================
+    # 2. DIBUJAR NODOS
+    # ==========================================
     node_x, node_y, node_color, node_size, node_text = [], [], [], [], []
     for node in G.nodes():
         x, y = pos[node]
         node_x.append(x); node_y.append(y)
         node_text.append(f"<b>Nodo {node}</b>" + (" (Depósito)" if node == deposito else ""))
-        if node == deposito: node_color.append('#ff4d4d'); node_size.append(22)
-        else: node_color.append('#bdc3c7'); node_size.append(12)
+        if node == deposito:
+            node_color.append('#ff4d4d'); node_size.append(22)
+        else:
+            node_color.append('#bdc3c7'); node_size.append(12)
 
     fig.add_trace(go.Scatter(
         x=node_x, y=node_y, mode='markers+text',
@@ -165,19 +223,35 @@ def dibujar_rutas(G, solucion, data, ruta_idx=None, k_layout=1.5, metaheuristica
         showlegend=False
     ))
 
-    # LAYOUT
+    # ==========================================
+    # 3. MÁRGENES Y CONFIGURACIÓN FINAL
+    # ==========================================
     x_vals = [p[0] for p in pos.values()]
     y_vals = [p[1] for p in pos.values()]
     x_pad = (max(x_vals) - min(x_vals)) * 0.15 
     y_pad = (max(y_vals) - min(y_vals)) * 0.15
 
     fig.update_layout(
-        title=dict(text=f"<b>{titulo_grafica}</b>", x=0.5, font=dict(size=18, color='black')), 
+        title=dict(
+            text=f"<b>{titulo_grafica}</b>", 
+            x=0.5, 
+            font=dict(size=18, color='black')
+        ), 
         font=dict(color='black'), 
-        annotations=annotations, hovermode='closest', plot_bgcolor='white', paper_bgcolor='white',
+        annotations=annotations,
+        hovermode='closest',
+        plot_bgcolor='white', 
+        paper_bgcolor='white', 
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[min(x_vals)-x_pad, max(x_vals)+x_pad]),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[min(y_vals)-y_pad, max(y_vals)+y_pad]),
-        margin=dict(l=20, r=20, t=60, b=20), height=700,
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(255, 255, 255, 0.9)", bordercolor="lightgray", borderwidth=1, font=dict(color='black'), itemclick=False, itemdoubleclick=False)
+        margin=dict(l=20, r=20, t=60, b=20),
+        height=700,
+        legend=dict(
+            yanchor="top", y=0.99, xanchor="left", x=0.01, 
+            bgcolor="rgba(255, 255, 255, 0.9)", bordercolor="lightgray", borderwidth=1,
+            font=dict(color='black'), 
+            itemclick=False, itemdoubleclick=False 
+        )
     )
+    
     return fig, texto_leyenda
