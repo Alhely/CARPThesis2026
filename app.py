@@ -72,7 +72,7 @@ if 'd_noreq' in st.session_state:
         
         with st.spinner("Generando red base interactiva..."):
             fig_base, _ = viz.dibujar_rutas(
-                st.session_state['grafo'], [], data, ruta_idx=None, metaheuristica="Red Original"
+                st.session_state['grafo'], [], data, ruta_idx=None, metaheuristica="Grafo Original"
             )
             st.plotly_chart(fig_base, use_container_width=True, key="plot_instancia_base")
         
@@ -170,22 +170,43 @@ if 'd_noreq' in st.session_state:
             st.divider()
             
             # --- 3. DEBUG: APLICACIÓN DE OPERADOR DE VECINDARIO ---
-            st.markdown("### 🔍 DEBUG: Aplicación de Operador de Vecindario")
-            st.write("Selecciona un operador para generar un **Nuevo Vecino** evaluado siempre a partir de la **Solución Inicial**.")
+            st.markdown("### 🔍 Exploración Controlada de Vecindarios")
             
-            col_op1, col_op2 = st.columns([1, 2])
+            # NUEVO: Explicación integral de las 3 reglas de Factibilidad
+            cap_max = data.get('CAPACIDAD', 'N/A')
+            vehiculos_max = data.get('VEHICULOS', 'N/A')
+            
+            st.info(
+                f"⚖️ **Reglas de Factibilidad Activas:** El motor rechazará automáticamente el vecino y buscará otro si viola cualquiera de estas restricciones:\n"
+                f"1. **Capacidad:** La demanda sumada de la ruta supera el máximo del vehículo (**{cap_max} unidades**).\n"
+                f"2. **Flota Disponible:** Se utilizan más vehículos de los permitidos por la instancia (**{vehiculos_max} max**).\n"
+                f"3. **Conectividad de Red:** No existe un camino válido en el grafo para viajar entre dos tareas adyacentes o hacia el depósito."
+            )
+            
+            col_op1, col_op2, col_op3, col_op4 = st.columns([1, 1, 1, 2])
             with col_op1: 
                 op_manual = st.selectbox("Operador Local:", ["swap", "insertion", "inversion"])
             with col_op2:
+                p_inter_val = st.slider(
+                    "Prob. Inter-Ruta:", 
+                    min_value=0.0, max_value=1.0, value=0.5, step=0.1,
+                    help="Si el número aleatorio es <= a esto, cruza rutas (Inter). Si es > cambia la misma ruta (Intra)."
+                )
+            with col_op3:
+                max_intentos_val = st.number_input(
+                    "Máx. Intentos:", 
+                    min_value=1, max_value=1000, value=100, step=10,
+                    help="Límite de veces que el motor intentará generar un vecino que cumpla con las reglas de factibilidad."
+                )
+            with col_op4:
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("⚡ Generar Vecino desde Solución Inicial", use_container_width=True):
-                    # IMPORTANTE: Pasamos estrictamente 'sol_inicial' para anclar la búsqueda
+                if st.button("⚡ Generar Vecino", use_container_width=True):
                     vecino, c_vec, txt_vec = carp.aplicar_y_evaluar_vecindario(
                         st.session_state['sol_inicial'], data, st.session_state['grafo'], 
-                        st.session_state['distancias'], operador=op_manual, max_intentos=50
+                        st.session_state['distancias'], operador=op_manual, 
+                        p_inter=p_inter_val, max_intentos=max_intentos_val
                     )
                     
-                    # Guardamos el resultado como un "vecino temporal"
                     st.session_state['vecino_actual'] = vecino
                     st.session_state['costo_vecino'] = c_vec
                     st.session_state['reporte_vecino'] = txt_vec
@@ -211,45 +232,45 @@ if 'd_noreq' in st.session_state:
                     col_m2.metric("Costo Nuevo Vecino", c_new, delta=int(delta), delta_color="inverse")
                     
                     if delta < 0:
-                        col_m3.success("✅ Mejora (Aceptable)")
+                        col_m3.success("✅ Mejora")
                     elif delta > 0:
-                        col_m3.error("❌ Empeora (Rechazable en Hill Climbing)")
+                        col_m3.error("❌ Empeora")
                     else:
-                        col_m3.info("⏸️ Costo idéntico (Mov. Lateral)")
+                        col_m3.info("⏸️ Sin cambio")
 
-                # 2. Estructura del Nuevo Vecino (Movido arriba según tu petición)
-                st.markdown("#### 🔄 Estructura del Nuevo Vecino")
-                texto_rutas_vecino = ""
-                for i, ruta in enumerate(st.session_state['vecino_actual']):
-                    texto_rutas_vecino += f"**RUTA {i+1}:** `{ruta}`\n\n"
+                # 2. Análisis Visual de Cambios
+                st.markdown("#### 🔄 Análisis Estructural de la Operación")
                 
-                with st.container(border=True):
-                    st.markdown(texto_rutas_vecino)
-
-                # 3. Reporte del Movimiento (Parseado y Beautificado)
-                st.markdown("#### 📝 Detalles de la Operación")
+                base_sol = st.session_state['sol_inicial']
+                new_sol = st.session_state['vecino_actual']
                 
-                raw_text = st.session_state['reporte_vecino']
-                lineas = [line.strip() for line in raw_text.split('\n') if line.strip()]
-                reporte_limpio = ""
-
-                # Leemos línea por línea el reporte crudo y le damos estilo Markdown
-                for linea in lineas:
-                    if linea.startswith("===") or linea.startswith("***"):
-                        reporte_limpio += f"##### ⚙️ {linea.replace('=', '').replace('*', '').strip()}\n"
-                    elif "Costo" in linea or "costo" in linea:
-                        reporte_limpio += f"> 🏷️ **{linea}**\n"
-                    elif "factible" in linea.lower() or "éxito" in linea.lower():
-                        reporte_limpio += f"> ✅ *{linea}*\n"
+                rutas_cambiadas = []
+                for i in range(len(base_sol)):
+                    if base_sol[i] != new_sol[i]:
+                        rutas_cambiadas.append(i)
+                
+                if not rutas_cambiadas:
+                    # El warning ahora abarca las 3 posibilidades
+                    st.warning(f"⚠️ El operador se agotó tras {max_intentos_val} intentos. Todos los cambios resultaron idénticos o violaron las reglas de factibilidad (capacidad, flota o conectividad).")
+                else:
+                    if len(rutas_cambiadas) == 1:
+                        st.info("📌 **Clasificación del Movimiento:** `INTRA-RUTA` (Reordenamiento dentro de un mismo vehículo)")
                     else:
-                        reporte_limpio += f"> 🔸 {linea}\n"
-
-                with st.container(border=True):
-                    st.info("Log de ejecución del motor `carp_core`:")
-                    st.markdown(reporte_limpio)
+                        st.warning("📌 **Clasificación del Movimiento:** `INTER-RUTA` (Intercambio o transferencia entre vehículos distintos)")
+                    
+                    for idx in rutas_cambiadas:
+                        with st.container(border=True):
+                            st.markdown(f"**🚛 Ruta {idx + 1} alterada:**")
+                            st.markdown(f"🔴 **Antes:** `{base_sol[idx]}`")
+                            st.markdown(f"🟢 **Ahora:** `{new_sol[idx]}`")
+                
+                # 3. Log Original Oculto
+                with st.expander("Ver Log original de ejecución (carp_core)", expanded=False):
+                    st.code(st.session_state['reporte_vecino'], language="text")
                         
         else:
             st.warning("👈 Oprime el botón superior '🎲 Generar Solución Inicial Aleatoria' para inicializar los datos.")
+
 
     # ==========================================
     # PESTAÑA 3: RECOCIDO SIMULADO (SA)
