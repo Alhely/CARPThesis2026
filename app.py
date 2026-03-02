@@ -2,39 +2,93 @@ import os
 import sys
 import io
 import tempfile
+import time
 import streamlit as st
 import pandas as pd
+import numpy as np
 import carp_core as carp
-import viz_routes as viz
 import meta_sa as sa
-import meta_ts as ts  
+import meta_ts as ts
+import meta_cs as cs
+import viz_routes as viz
 
 st.set_page_config(page_title="CARP Optimizer", page_icon="🚛", layout="wide")
 st.title("🚛 Optimizador CARP")
 
 # ==========================================
+# FUNCIONES AUXILIARES
+# ==========================================
+def obtener_benchmarks_y_gap(nombre_instancia, df_benchmarks, costo_actual):
+    """Busca la instancia en el CSV y calcula el GAP devolviendo también los límites."""
+    if df_benchmarks is None or costo_actual is None:
+        return None, None, None, None, None, None
+        
+    fila = df_benchmarks[df_benchmarks['Instances'].str.strip().str.lower() == str(nombre_instancia).strip().lower()]
+    
+    if fila.empty:
+        return None, None, None, None, None, None
+        
+    def a_numero(val):
+        try:
+            if isinstance(val, str):
+                val = val.replace(',', '').strip()
+            return float(val)
+        except (ValueError, TypeError):
+            return np.nan 
+
+    bks = a_numero(fila['BKS'].values[0]) if 'BKS' in fila.columns else np.nan
+    blb = a_numero(fila['BLB'].values[0]) if 'BLB' in fila.columns else np.nan
+    bub = a_numero(fila['BUB'].values[0]) if 'BUB' in fila.columns else np.nan
+    
+    gap, ref_nombre, ref_valor = None, None, None
+    
+    # Jerarquía: BKS -> BLB -> BUB
+    if pd.notna(bks) and bks > 0:
+        gap = ((costo_actual - bks) / bks) * 100
+        ref_nombre, ref_valor = "BKS", bks
+    elif pd.notna(blb) and blb > 0:
+        gap = ((costo_actual - blb) / blb) * 100
+        ref_nombre, ref_valor = "BLB", blb
+    elif pd.notna(bub) and bub > 0:
+        gap = ((costo_actual - bub) / bub) * 100
+        ref_nombre, ref_valor = "BUB", bub
+        
+    return gap, ref_nombre, ref_valor, bks, blb, bub
+
+# ==========================================
 # BARRA LATERAL - INICIALIZACIÓN
 # ==========================================
-st.sidebar.header("1. Cargar Instancia")
-uploaded_file = st.sidebar.file_uploader("Sube tu archivo .dat", type=["dat"])
+st.sidebar.header("1. Cargar Datos")
+uploaded_file = st.sidebar.file_uploader("📁 Archivo de Instancia (.dat)", type=["dat"])
+uploaded_csv = st.sidebar.file_uploader("📊 Benchmarks Opcional (.csv)", type=["csv"], help="CSV con columnas: Instances, BKS, BLB, BUB")
+
+algoritmo_dist = st.sidebar.selectbox(
+    "Algoritmo de Caminos Cortos:", 
+    ["dijkstra", "floyd-warshall", "bellman-ford"],
+    format_func=lambda x: x.replace("-", " ").title()
+)
 
 if uploaded_file is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dat") as tmp:
         tmp.write(uploaded_file.getvalue())
         temp_path = tmp.name
 
-    if st.sidebar.button("🚀 Inicializar Entorno"):
-        with st.spinner("Procesando instancia y distancias (Sin generar solución)..."):
+    if st.sidebar.button("🚀 Inicializar Entorno", use_container_width=True, type="primary"):
+        with st.spinner(f"Calculando matriz de distancias con {algoritmo_dist.title()}..."):
             d_noreq = carp.leer_carplib_dat(temp_path)
             ruta_run, logger = carp.iniciar_ejecucion(d_noreq, base_dir="runs_carp_ui")
             
             grafo = carp.generar_grafo_limpio(d_noreq, carpeta_salida=ruta_run)
-            distancias = carp.calcular_matriz_distancias(grafo)
+            distancias = carp.calcular_matriz_distancias(grafo, algoritmo=algoritmo_dist)
             
-            # NOTA: Ya NO generamos la solución aquí. Se inicializan variables vacías.
+            df_bks = None
+            if uploaded_csv is not None:
+                df_bks = pd.read_csv(uploaded_csv)
+            
             st.session_state.update({
                 'd_noreq': d_noreq, 'ruta_run': ruta_run, 'logger': logger,
                 'grafo': grafo, 'distancias': distancias,
+                'df_benchmarks': df_bks,
                 'sol_inicial': None, 'costo_inicial': None,
                 'mejor_solucion_global': None, 'mejor_costo_global': None,
                 'meta_usada': 'Ninguna',
@@ -43,29 +97,66 @@ if uploaded_file is not None:
         st.sidebar.success("¡Entorno y Grafo listos!")
 
 # ==========================================
-# ÁREA PRINCIPAL - PESTAÑAS
+# ÁREA PRINCIPAL - MÉTRICAS Y PESTAÑAS
 # ==========================================
 if 'd_noreq' in st.session_state:
     data = st.session_state['d_noreq']
     
     # --- MÉTRICAS GLOBALES ---
+    st.markdown("### 📊 Panel General de la Instancia")
+    
+    # FILA 1: Datos físicos y Costo de tu algoritmo
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Instancia", data.get("NOMBRE", "N/A"))
+    
+    nombre_inst = data.get("NOMBRE", "N/A")
+    c1.metric("Instancia", nombre_inst)
     c2.metric("Vehículos", data.get("VEHICULOS", 0))
-    c3.metric("Capacidad Máxima", data.get("CAPACIDAD", 0))
-    # Mostramos "---" si aún no hay solución
-    costo_str = st.session_state.get('mejor_costo_global') if st.session_state.get('mejor_costo_global') is not None else "---"
+    c3.metric("Capacidad Máx.", data.get("CAPACIDAD", 0))
+    
+    costo_actual = st.session_state.get('mejor_costo_global')
+    costo_str = int(costo_actual) if costo_actual is not None else "---"
     c4.metric("🏆 Mejor Costo Actual", costo_str)
+    
+    # FILA 2: Benchmarks y Cálculo de GAP
+    st.markdown("#### 📖 Comparativa vs Literatura (Benchmarks)")
+    b1, b2, b3, b4 = st.columns(4)
+    
+    gap_val, ref_nombre, ref_valor, bks, blb, bub = obtener_benchmarks_y_gap(
+        nombre_instancia=nombre_inst, 
+        df_benchmarks=st.session_state.get('df_benchmarks'), 
+        costo_actual=costo_actual
+    )
+    
+    def formato_bench(val):
+        return int(val) if pd.notna(val) else "N/D"
+
+    if st.session_state.get('df_benchmarks') is not None:
+        b1.metric("BKS (Mejor Conocido)", formato_bench(bks))
+        b2.metric("BLB (Límite Inferior)", formato_bench(blb))
+        b3.metric("BUB (Límite Superior)", formato_bench(bub))
+        
+        if gap_val is not None:
+            label_gap = f"🎯 GAP (vs {ref_nombre})"
+            if gap_val <= 0.0:
+                b4.metric(label_gap, f"{gap_val:.2f}%", "¡Óptimo o Mejor! 🌟")
+            else:
+                b4.metric(label_gap, f"+{gap_val:.2f}%", delta_color="inverse")
+        else:
+            b4.metric("🎯 GAP", "Faltan valores base")
+    else:
+        st.info("💡 Sube un archivo CSV de Benchmarks en la barra lateral para ver límites y calcular el GAP.")
+        
     st.divider()
 
+    # --- ESTRUCTURA DE PESTAÑAS ---
     tab1, tab2, tab3, tab4 = st.tabs([
         "📄 Datos de la Instancia", 
         "🎲 Solución y Vecindarios", 
-        "🔥 Metaheurística (SA)", 
+        "🔥 Centro de Metaheurísticas", 
         "🗺️ Mapa de Rutas"
     ])
 
-# ==========================================
+    # ==========================================
     # PESTAÑA 1: DATOS DE LA INSTANCIA
     # ==========================================
     with tab1:
@@ -79,8 +170,6 @@ if 'd_noreq' in st.session_state:
         
         st.markdown("### 📋 Detalles de la Instancia")
         with st.expander("Ver Parámetros Extraídos", expanded=True):
-            
-            # 1. MOSTRAR LOS DATOS ESCALARES DIRECTO DEL DICCIONARIO
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown(f"**Nombre:** `{data.get('NOMBRE', 'N/A')}`")
@@ -97,7 +186,6 @@ if 'd_noreq' in st.session_state:
             
             st.divider()
             
-            # 2. MOSTRAR LAS LISTAS COMO TABLAS (DataFrames)
             col_req, col_noreq = st.columns(2)
             with col_req:
                 st.markdown("**Aristas Requeridas (Servicio)**")
@@ -113,11 +201,10 @@ if 'd_noreq' in st.session_state:
                 else:
                     st.info("No hay lista de aristas no requeridas.")
 
-# ==========================================
+    # ==========================================
     # PESTAÑA 2: SOLUCIÓN ALEATORIA Y VECINDARIOS
     # ==========================================
     with tab2:
-        # --- 1. GENERACIÓN DE SOLUCIÓN INICIAL ---
         st.markdown("### 🌱 Generación de Solución Inicial")
         
         if st.button("🎲 Generar Solución Inicial Aleatoria", use_container_width=True, type="primary"):
@@ -128,7 +215,6 @@ if 'd_noreq' in st.session_state:
                 _, n_costo, n_txt = carp.calcular_y_mostrar_rutas_compacto(nueva_sol, data, st.session_state['grafo'])
                 sys.stdout = sys.__stdout__
                 
-                # Guardamos la inicial y limpiamos cualquier vecino previo
                 st.session_state.update({
                     'sol_inicial': nueva_sol, 
                     'costo_inicial': n_costo,
@@ -141,11 +227,9 @@ if 'd_noreq' in st.session_state:
                 })
                 st.rerun()
 
-        # Solo mostrar el contenido si la solución inicial existe
         if st.session_state.get('sol_inicial') is not None:
             st.info(f"**Costo de la Solución Base:** {st.session_state['costo_inicial']}")
             
-            # FORMATO LIMPIO: RUTA 1: ARRAY[0], RUTA 2: ARRAY[1]...
             texto_rutas_base = ""
             for i, ruta in enumerate(st.session_state['sol_inicial']):
                 texto_rutas_base += f"**RUTA {i+1}:** `{ruta}`\n\n"
@@ -155,33 +239,27 @@ if 'd_noreq' in st.session_state:
                 
             st.divider()
             
-            # --- 2. SECUENCIAS DE LA SOLUCIÓN ACTUAL ---
             st.markdown("### 📋 Secuencias de la Solución Inicial")
             with st.spinner("Generando formato de bitácora..."):
                 _, texto_leyenda_base = viz.dibujar_rutas(
-                    st.session_state['grafo'], 
-                    st.session_state['sol_inicial'], 
-                    data, 
-                    ruta_idx=None, 
-                    metaheuristica="Solución Inicial"
+                    st.session_state['grafo'], st.session_state['sol_inicial'], data, 
+                    ruta_idx=None, metaheuristica="Solución Inicial"
                 )
                 with st.container(border=True):
                     st.markdown(texto_leyenda_base)
             
             st.divider()
             
-            # --- 3. DEBUG: APLICACIÓN DE OPERADOR DE VECINDARIO ---
             st.markdown("### 🔍 Exploración Controlada de Vecindarios")
             
-            # NUEVO: Explicación integral de las 3 reglas de Factibilidad
             cap_max = data.get('CAPACIDAD', 'N/A')
             vehiculos_max = data.get('VEHICULOS', 'N/A')
             
             st.info(
-                f"⚖️ **Reglas de Factibilidad Activas:** El motor rechazará automáticamente el vecino y buscará otro si viola cualquiera de estas restricciones:\n"
-                f"1. **Capacidad:** La demanda sumada de la ruta supera el máximo del vehículo (**{cap_max} unidades**).\n"
-                f"2. **Flota Disponible:** Se utilizan más vehículos de los permitidos por la instancia (**{vehiculos_max} max**).\n"
-                f"3. **Conectividad de Red:** No existe un camino válido en el grafo para viajar entre dos tareas adyacentes o hacia el depósito."
+                f"⚖️ **Reglas de Factibilidad Activas:** El motor rechazará automáticamente el vecino si:\n"
+                f"1. **Capacidad:** La demanda sumada supera el máximo del vehículo (**{cap_max} unidades**).\n"
+                f"2. **Flota Disponible:** Se utilizan más vehículos de los permitidos (**{vehiculos_max} max**).\n"
+                f"3. **Conectividad:** No existe un camino válido en el grafo para viajar entre dos tareas."
             )
             
             col_op1, col_op2, col_op3, col_op4 = st.columns([1, 1, 1, 2])
@@ -197,7 +275,7 @@ if 'd_noreq' in st.session_state:
                 max_intentos_val = st.number_input(
                     "Máx. Intentos:", 
                     min_value=1, max_value=1000, value=100, step=10,
-                    help="Límite de veces que el motor intentará generar un vecino que cumpla con las reglas de factibilidad."
+                    help="Límite de intentos para generar un vecino factible."
                 )
             with col_op4:
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -218,7 +296,6 @@ if 'd_noreq' in st.session_state:
                         st.session_state['meta_usada'] = f"Búsqueda Manual ({op_manual.capitalize()})"
                         st.toast("¡Nuevo óptimo global encontrado manualmente!", icon="🎉")
 
-            # --- BEAUTIFY: PANEL DE COMPARACIÓN ---
             if st.session_state.get('vecino_actual') is not None:
                 st.markdown("#### ⚖️ Comparativa: Solución Inicial vs Nuevo Vecino")
                 
@@ -226,7 +303,6 @@ if 'd_noreq' in st.session_state:
                 c_new = st.session_state['costo_vecino']
                 delta = c_new - c_base
                 
-                # 1. Panel de Métricas de Costo
                 with st.container(border=True):
                     col_m1, col_m2, col_m3 = st.columns(3)
                     col_m1.metric("Costo Solución Inicial", c_base)
@@ -239,7 +315,6 @@ if 'd_noreq' in st.session_state:
                     else:
                         col_m3.info("⏸️ Sin cambio")
 
-                # 2. Análisis Visual de Cambios
                 st.markdown("#### 🔄 Análisis Estructural de la Operación")
                 
                 base_sol = st.session_state['sol_inicial']
@@ -251,8 +326,7 @@ if 'd_noreq' in st.session_state:
                         rutas_cambiadas.append(i)
                 
                 if not rutas_cambiadas:
-                    # El warning ahora abarca las 3 posibilidades
-                    st.warning(f"⚠️ El operador se agotó tras {max_intentos_val} intentos. Todos los cambios resultaron idénticos o violaron las reglas de factibilidad (capacidad, flota o conectividad).")
+                    st.warning(f"⚠️ El operador se agotó tras {max_intentos_val} intentos. Cambios idénticos o violaron factibilidad.")
                 else:
                     if len(rutas_cambiadas) == 1:
                         st.info("📌 **Clasificación del Movimiento:** `INTRA-RUTA` (Reordenamiento dentro de un mismo vehículo)")
@@ -265,15 +339,13 @@ if 'd_noreq' in st.session_state:
                             st.markdown(f"🔴 **Antes:** `{base_sol[idx]}`")
                             st.markdown(f"🟢 **Ahora:** `{new_sol[idx]}`")
                 
-                # 3. Log Original Oculto
                 with st.expander("Ver Log original de ejecución (carp_core)", expanded=False):
                     st.code(st.session_state['reporte_vecino'], language="text")
                         
         else:
             st.warning("👈 Oprime el botón superior '🎲 Generar Solución Inicial Aleatoria' para inicializar los datos.")
 
-
-# ==========================================
+    # ==========================================
     # PESTAÑA 3: CENTRO DE METAHEURÍSTICAS
     # ==========================================
     with tab3:
@@ -282,20 +354,18 @@ if 'd_noreq' in st.session_state:
         else:
             st.markdown("### ⚙️ Motor de Optimización Avanzada")
             
-            # 1. SELECTOR DINÁMICO DE ALGORITMO
             meta_seleccionada = st.selectbox(
                 "🧠 Selecciona la Metaheurística a ejecutar:",
-                ["Recocido Simulado (SA)", "Búsqueda Tabú (TS)"],
+                ["Recocido Simulado (SA)", "Búsqueda Tabú (TS)", "Cuckoo Search (CS)"],
                 help="El algoritmo partirá desde la Mejor Solución Global encontrada hasta el momento."
             )
             
             st.divider()
             
-            # 2. PANEL DE PARÁMETROS DINÁMICOS
             st.markdown(f"#### 🎛️ Configuración para {meta_seleccionada}")
             
             if meta_seleccionada == "Recocido Simulado (SA)":
-                st.info("🔥 **Comportamiento:** Acepta peores soluciones con una probabilidad que disminuye con la temperatura (Enfriamiento). Ideal para salir de óptimos locales suavemente.")
+                st.info("🔥 **Comportamiento:** Acepta peores soluciones con una probabilidad térmica. Búsqueda de un solo agente.")
                 col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
                 with col_p1: t_inicial = st.number_input("Temp. Inicial ($T_0$)", value=1000.0, step=100.0)
                 with col_p2: alfa = st.number_input("Enfriamiento ($\\alpha$)", value=0.95, step=0.01, format="%.2f")
@@ -304,25 +374,33 @@ if 'd_noreq' in st.session_state:
                 with col_p5: operador_meta = st.selectbox("Operador SA", ["swap", "insertion", "inversion", "mixto"], key="op_sa")
 
             elif meta_seleccionada == "Búsqueda Tabú (TS)":
-                st.info("🧠 **Comportamiento:** Explora múltiples candidatos por iteración y toma el mejor. Usa una memoria estricta para no repetir configuraciones recientes (Anti-Ciclos).")
-                
+                st.info("🧠 **Comportamiento:** Explora múltiples vecinos a la vez y usa memoria estricta para evitar ciclos.")
                 col_t1, col_t2, col_t3 = st.columns(3)
-                with col_t1: tenencia_tabu = st.number_input("Tenencia Tabú (Memoria)", value=15, step=1, help="Cuántas soluciones anteriores se prohíben visitar.")
-                with col_t2: max_iteraciones = st.number_input("Iteraciones Máximas", value=100, step=10)
-                with col_t3: tam_vecindario = st.number_input("Candidatos por Iteración", value=20, step=5, help="Cuántos vecinos genera y evalúa a la vez.")
-                
-                # Fila 2 de parámetros de vecindario (Específicos porque la función TS los recibe)
+                with col_t1: tenencia_tabu = st.number_input("Tenencia Tabú (Memoria)", value=15, step=1)
+                with col_t2: max_iteraciones = st.number_input("Iteraciones Máximas", value=100, step=10, key="it_ts")
+                with col_t3: tam_vecindario = st.number_input("Candidatos por Iteración", value=20, step=5)
                 col_t4, col_t5, col_t6 = st.columns(3)
                 with col_t4: operador_meta = st.selectbox("Operador Local", ["swap", "insertion", "inversion", "mixto"], key="op_ts")
                 with col_t5: p_inter_meta = st.slider("Prob. Inter-Ruta ($p_{inter}$)", 0.0, 1.0, 0.5, step=0.1, key="p_ts")
                 with col_t6: max_int_meta = st.number_input("Máx. Intentos Factibilidad", value=100, step=10, key="int_ts")
 
-            # 3. EJECUCIÓN UNIFICADA
+            elif meta_seleccionada == "Cuckoo Search (CS)":
+                st.info("🪺 **Comportamiento:** Basado en población. Usa Vuelos de Lévy y destruye soluciones periódicamente.")
+                col_c1, col_c2, col_c3 = st.columns(3)
+                with col_c1: num_nidos = st.number_input("Cantidad de Nidos (Población)", value=15, step=5)
+                with col_c2: p_a = st.slider("Tasa de Abandono ($p_a$)", 0.0, 1.0, 0.25, step=0.05)
+                with col_c3: max_iteraciones = st.number_input("Generaciones Máximas", value=100, step=10, key="it_cs")
+                col_c4, col_c5, col_c6 = st.columns(3)
+                with col_c4: operador_meta = st.selectbox("Operador Vuelo Lévy", ["swap", "insertion", "inversion", "mixto"], key="op_cs")
+                with col_c5: p_inter_meta = st.slider("Prob. Inter-Ruta ($p_{inter}$)", 0.0, 1.0, 0.5, step=0.1, key="p_cs")
+                with col_c6: max_int_meta = st.number_input("Máx. Intentos Factibilidad", value=100, step=10, key="int_cs")
+
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button(f"🚀 Iniciar Optimización Global", use_container_width=True, type="primary"):
                 
-                with st.spinner(f"Ejecutando {meta_seleccionada}... Esto puede tomar unos segundos."):
-                    # Enrutamos la ejecución según lo que eligió el usuario
+                with st.spinner(f"Ejecutando {meta_seleccionada}... Esto puede tomar un momento."):
+                    t_inicio_cpu = time.process_time()
+                    
                     if meta_seleccionada == "Recocido Simulado (SA)":
                         mejor_sol, mejor_costo, historial, stats = sa.optimizar(
                             st.session_state['mejor_solucion_global'], data, st.session_state['distancias'],
@@ -331,41 +409,41 @@ if 'd_noreq' in st.session_state:
                         nombre_algoritmo = "Recocido Simulado"
                         
                     elif meta_seleccionada == "Búsqueda Tabú (TS)":
-                        # Llamamos al nuevo motor pasando todos sus argumentos específicos
                         mejor_sol, mejor_costo, historial, stats = ts.optimizar(
-                            solucion_inicial=st.session_state['mejor_solucion_global'], 
-                            costo_inicial=st.session_state['mejor_costo_global'], 
-                            data=data, 
-                            grafo=st.session_state['grafo'], 
-                            distancias=st.session_state['distancias'], 
-                            tenencia_tabu=tenencia_tabu, 
-                            max_iteraciones=max_iteraciones, 
-                            tam_vecindario=tam_vecindario, 
-                            operador=operador_meta, 
-                            p_inter=p_inter_meta, 
-                            max_intentos_vecino=max_int_meta
+                            st.session_state['mejor_solucion_global'], st.session_state['mejor_costo_global'], 
+                            data, st.session_state['grafo'], st.session_state['distancias'], 
+                            tenencia_tabu, max_iteraciones, tam_vecindario, 
+                            operador_meta, p_inter_meta, max_int_meta
                         )
                         nombre_algoritmo = "Búsqueda Tabú"
+                        
+                    elif meta_seleccionada == "Cuckoo Search (CS)":
+                        mejor_sol, mejor_costo, historial, stats = cs.optimizar(
+                            st.session_state['mejor_solucion_global'], st.session_state['mejor_costo_global'], 
+                            data, st.session_state['grafo'], st.session_state['distancias'], 
+                            num_nidos, p_a, max_iteraciones, 
+                            operador_meta, p_inter_meta, max_int_meta
+                        )
+                        nombre_algoritmo = "Cuckoo Search"
 
-                    # 4. ACTUALIZACIÓN DEL ESTADO GLOBAL
+                    t_fin_cpu = time.process_time()
+                    tiempo_cpu = t_fin_cpu - t_inicio_cpu
+
                     if mejor_costo < st.session_state['mejor_costo_global']:
                         st.session_state['mejor_solucion_global'] = mejor_sol
                         st.session_state['mejor_costo_global'] = mejor_costo
                         st.session_state['meta_usada'] = nombre_algoritmo
-                        st.toast(f"¡{nombre_algoritmo} encontró un nuevo récord global!", icon="🏆")
+                        st.toast(f"¡{nombre_algoritmo} encontró un récord en {tiempo_cpu:.2f}s!", icon="🏆")
                     
-                    # Guardamos resultados en disco para auditoría
+                    stats['tiempo_cpu_segundos'] = tiempo_cpu
                     carp.guardar_objeto_automatico(st.session_state['ruta_run'], f"{nombre_algoritmo.replace(' ', '_')}_mejor", mejor_sol)
                     carp.guardar_objeto_automatico(st.session_state['ruta_run'], f"{nombre_algoritmo.replace(' ', '_')}_stats", stats)
                     
-                # 5. BEAUTIFY: PANEL DE RESULTADOS
                 st.success(f"¡✅ Optimización finalizada con éxito mediante {meta_seleccionada}!")
-                
                 st.markdown("### 📊 Panel de Rendimiento del Algoritmo")
                 
-                # Métricas dinámicas dependiendo de qué stats escupa el algoritmo
                 metric_cols = st.columns(4)
-                metric_cols[0].metric("Iteraciones Totales", f"{stats.get('iteraciones_totales', 0):,}")
+                metric_cols[0].metric("Iteraciones/Generaciones", f"{stats.get('iteraciones_totales', 0):,}")
                 
                 if meta_seleccionada == "Recocido Simulado (SA)":
                     tasa_f = (stats.get('vecinos_factibles', 0) / stats.get('iteraciones_totales', 1)) * 100
@@ -373,14 +451,16 @@ if 'd_noreq' in st.session_state:
                     metric_cols[2].metric("Movs. Aceptados", f"{stats.get('movimientos_aceptados', 0):,}")
                 elif meta_seleccionada == "Búsqueda Tabú (TS)":
                     metric_cols[1].metric("Candidatos Evaluados", f"{stats.get('candidatos_evaluados', 0):,}")
-                    metric_cols[2].metric("Aspiraciones Tabú", f"{stats.get('movimientos_tabu_aspirados', 0):,}", help="Movimientos prohibidos que fueron aceptados por ser récords históricos.")
+                    metric_cols[2].metric("Aspiraciones Tabú", f"{stats.get('movimientos_tabu_aspirados', 0):,}")
+                elif meta_seleccionada == "Cuckoo Search (CS)":
+                    metric_cols[1].metric("Nidos Abandonados", f"{stats.get('nidos_abandonados', 0):,}")
+                    metric_cols[2].metric("Cuckoos Exitosos", f"{stats.get('huevos_cuckoo_exitosos', 0):,}")
                 
                 metric_cols[3].metric("Nuevos Óptimos Globales", f"{stats.get('mejoras_globales', 0):,}")
                 
                 st.divider()
                 
-                # Impacto en el costo global
-                c_res1, c_res2, c_res3 = st.columns(3)
+                c_res1, c_res2, c_res3, c_res4 = st.columns(4)
                 costo_arranque = historial[0] if historial else st.session_state['costo_inicial']
                 c_res1.metric("Costo Antes de Ejecución", costo_arranque)
                 
@@ -388,15 +468,14 @@ if 'd_noreq' in st.session_state:
                 c_res2.metric("Costo Tras Ejecución", mejor_costo, delta=delta_ejecucion, delta_color="inverse")
                 
                 mejora_pct = ((costo_arranque - mejor_costo) / costo_arranque) * 100 if costo_arranque > 0 else 0
-                c_res3.metric("% de Mejora en esta ronda", f"{mejora_pct:.2f}%")
+                c_res3.metric("% de Mejora (Ronda)", f"{mejora_pct:.2f}%")
+                c_res4.metric("⏱️ Tiempo de CPU", f"{tiempo_cpu:.3f} s")
 
-                # Gráfica de convergencia interactiva
                 st.markdown("#### 📉 Curva de Convergencia (Costo vs Iteración)")
                 df_historial = pd.DataFrame(historial, columns=["Costo Récord"])
-                st.line_chart(df_historial, use_container_width=True)   
+                st.line_chart(df_historial, use_container_width=True)
 
-
-# ==========================================
+    # ==========================================
     # PESTAÑA 4: MAPA DE RUTAS (INTERACTIVO)
     # ==========================================
     with tab4:
@@ -433,9 +512,6 @@ if 'd_noreq' in st.session_state:
                 cap_max = data.get('CAPACIDAD', 0)
                 info_tareas = {t['tarea']: t for t in data.get('LISTA_ARISTAS_REQ', [])}
 
-                # ---------------------------------------------------------
-                # MODO CINE (Ventana Emergente Gigante con diseño lateral)
-                # ---------------------------------------------------------
                 @st.dialog(f"🎬 MODO CINE: Explorando Ruta {idx + 1}", width="large")
                 def reproductor_fullscreen():
                     G = st.session_state['grafo']
@@ -446,13 +522,10 @@ if 'd_noreq' in st.session_state:
                     if clave_paso not in st.session_state:
                         st.session_state[clave_paso] = 0 
                     
-                    # Diseño 70/30 en Modo Cine
                     col_mapa_fs, col_ctrl_fs = st.columns([7, 3])
                     
                     with col_ctrl_fs:
                         st.markdown("#### 🎛️ Controles")
-                        
-                        # Cuadrícula 2x2 para botones
                         c1, c2 = st.columns(2)
                         with c1:
                             if st.button("⏪ Inicio", use_container_width=True, key="btn_ini_fs"): st.session_state[clave_paso] = 0
@@ -467,7 +540,6 @@ if 'd_noreq' in st.session_state:
                         st.progress(paso_actual / total_pasos if total_pasos > 0 else 0)
                         st.caption(f"Paso **{paso_actual}** de **{total_pasos}**")
                         
-                        # Cálculos dinámicos
                         costo_acumulado = 0
                         demanda_acumulada = 0
                         for i in range(paso_actual):
@@ -479,7 +551,6 @@ if 'd_noreq' in st.session_state:
                                 costo_acumulado += info_tareas[tarea_id]['costo']
                                 demanda_acumulada += info_tareas[tarea_id]['demanda']
                         
-                        # Métricas apiladas lateralmente
                         st.divider()
                         st.metric("💵 Costo Acumulado", int(costo_acumulado))
                         st.metric("📦 Carga Actual", f"{demanda_acumulada} / {cap_max}")
@@ -493,12 +564,9 @@ if 'd_noreq' in st.session_state:
                                 G, mejor_solucion, data, 
                                 ruta_idx=idx, metaheuristica=nombre_meta, paso_limite=paso_actual
                             )
-                            fig_fs.update_layout(height=650, margin=dict(l=0, r=0, t=30, b=0)) # Ajuste de márgenes
+                            fig_fs.update_layout(height=650, margin=dict(l=0, r=0, t=30, b=0))
                             st.plotly_chart(fig_fs, use_container_width=True, key=f"plot_ruta_fs_{idx}")
 
-                # ---------------------------------------------------------
-                # VISTA ESTÁNDAR INTEGRADA (También con diseño lateral)
-                # ---------------------------------------------------------
                 @st.fragment
                 def reproductor_integrado():
                     G = st.session_state['grafo']
@@ -509,13 +577,10 @@ if 'd_noreq' in st.session_state:
                     if clave_paso not in st.session_state:
                         st.session_state[clave_paso] = 0 
                         
-                    # Diseño 70/30 en Pestaña Normal
                     col_mapa, col_ctrl = st.columns([7, 3])
                     
                     with col_ctrl:
                         st.markdown("#### 🎛️ Controles")
-                        
-                        # Cuadrícula 2x2
                         c1, c2 = st.columns(2)
                         with c1:
                             if st.button("⏪ Inicio", use_container_width=True, key=f"btn_ini_{idx}"): st.session_state[clave_paso] = 0
@@ -530,7 +595,6 @@ if 'd_noreq' in st.session_state:
                         st.progress(paso_actual / total_pasos if total_pasos > 0 else 0)
                         st.caption(f"Paso **{paso_actual}** de **{total_pasos}**")
                         
-                        # Cálculos dinámicos
                         costo_acumulado = 0
                         demanda_acumulada = 0
                         for i in range(paso_actual):
@@ -543,15 +607,11 @@ if 'd_noreq' in st.session_state:
                                 demanda_acumulada += info_tareas[tarea_id]['demanda']
                                 
                         st.divider()
-                        
-                        # Métricas más compactas para no empujar la pantalla
                         mc1, mc2 = st.columns(2)
                         mc1.metric("💵 Costo", int(costo_acumulado))
                         mc2.metric("📦 Carga", f"{demanda_acumulada}/{cap_max}")
                         
                         st.divider()
-                        
-                        # El botón de Modo Cine al final del panel de control
                         if st.button("🎬 Abrir Modo Cine", use_container_width=True, type="secondary", key=f"btn_cine_{idx}"):
                             reproductor_fullscreen()
 
